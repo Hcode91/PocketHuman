@@ -79,7 +79,7 @@ class MainActivity : Activity() {
             dirty.set(false)
             model.rebuild()
             val parts = PartBuilder.build(model, false)
-            runOnUiThread { view3d.show(parts); updateInfo() }
+            runOnUiThread { if (draft == null) view3d.show(parts); updateInfo() }
         }
     }
     private fun updateInfo() {
@@ -213,8 +213,25 @@ class MainActivity : Activity() {
                 for (u in lib.defs.arkit) slider(u, s.expression["arkit:$u"] ?: 0f, 0f, 1f, ::pct) { x -> if (x < 0.01f) s.expression.remove("arkit:$u") else s.expression["arkit:$u"] = x; changed() }
             }
             "Clothes" -> {
+                button("Import outfit (.glb / .obj from Meshy or other AI tools)") { startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "*/*" }, REQ_OUTFIT) }
+                val mine = lib.proxies.filter { it.id.startsWith("my_") }
+                if (mine.isNotEmpty()) {
+                    header("My outfits")
+                    for (p in mine) {
+                        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                        row.addView(TextView(this).apply { text = (if (p.id in s.clothes) "☑  " else "☐  ") + p.label; textSize = 15f; setTextColor(if (p.id in s.clothes) accent else fg); setPadding(dp(4), dp(10), dp(4), dp(10))
+                            setOnClickListener { if (!s.clothes.remove(p.id)) s.clothes.add(p.id); showTab(tab); changed(); saveLast() } }, LinearLayout.LayoutParams(0, -2, 1f))
+                        row.addView(TextView(this).apply { text = "Edit"; setTextColor(accent); textSize = 14f; setPadding(dp(10), dp(10), dp(10), dp(10))
+                            setOnClickListener { worker.execute { val d = OutfitDraft.loadSaved(filesDir, p.id.removePrefix("my_")); runOnUiThread { if (d != null) openEditor(d) else toast("Couldn't open that outfit") } } } })
+                        row.addView(TextView(this).apply { text = "Delete"; setTextColor(dim); textSize = 14f; setPadding(dp(10), dp(10), dp(10), dp(10))
+                            setOnClickListener { AlertDialog.Builder(this@MainActivity).setMessage("Delete ${p.label}?").setPositiveButton("Delete") { _, _ ->
+                                OutfitDraft.delete(filesDir, p.id.removePrefix("my_")); s.clothes.remove(p.id); reloadLibrary { showTab("Clothes") } }.setNegativeButton("Cancel", null).show() } })
+                        content.addView(row)
+                    }
+                    header("Included clothes")
+                }
                 header("Tap to put on or take off. Body under clothes is hidden, and kept as its own part in the export.")
-                for (p in lib.ofKind("clothes")) toggleOption(p.label + (lib.credits[p.id]?.takeIf { !it.license.equals("CC0", true) }?.let { "  (${it.license})" } ?: ""), p.id in s.clothes) { if (!s.clothes.remove(p.id)) s.clothes.add(p.id) }
+                for (p in lib.ofKind("clothes").filter { !it.id.startsWith("my_") }) toggleOption(p.label + (lib.credits[p.id]?.takeIf { !it.license.equals("CC0", true) }?.let { "  (${it.license})" } ?: ""), p.id in s.clothes) { if (!s.clothes.remove(p.id)) s.clothes.add(p.id) }
             }
             "Eyes" -> {
                 val eyes = lib.proxies.firstOrNull { it.kind == "eyes" }
@@ -268,6 +285,105 @@ class MainActivity : Activity() {
                 "Body, morphs, skins, eyes and hair come from the MakeHuman / MPFB2 community and are CC0, so anything you make is yours to use, including commercially."
         })
     }
+    // ------------------------------------------------------------------ outfit editor
+    private var draft: OutfitDraft? = null
+    private var draftBody: BodyQuery? = null
+    private var draftColors: ColorSampler? = null
+    private var draftTex: String? = null
+    private var lastFit: OutfitDraft.Fitted? = null
+    private val draftDirty = AtomicBoolean(false)
+    private var pendingOutfit: java.io.File? = null
+
+    private fun openEditor(d: OutfitDraft) {
+        draft = d; tabBar.visibility = View.GONE
+        val wait = AlertDialog.Builder(this).setMessage("Preparing…").setCancelable(false).show()
+        worker.execute {
+            draftBody = BodyQuery(model)
+            draftColors = d.raw.texture?.let { t ->
+                val o = android.graphics.BitmapFactory.Options().apply { inSampleSize = 2 }
+                android.graphics.BitmapFactory.decodeByteArray(t, 0, t.size, o)?.let { bmp ->
+                    ColorSampler { u, v -> bmp.getPixel((u.coerceIn(0f, 0.9999f) * bmp.width).toInt(), (v.coerceIn(0f, 0.9999f) * bmp.height).toInt()) } }
+            }
+            val dir = java.io.File(filesDir, "imported/my_outfits/preview").apply { mkdirs() }
+            dir.listFiles()?.forEach { it.delete() }
+            draftTex = if (d.raw.texture != null) { java.io.File(dir, "${d.id}.${d.raw.textureExt}").writeBytes(d.raw.texture); "imported/my_outfits/preview/${d.id}.${d.raw.textureExt}" }
+                else { java.io.File(dir, "grey.png").writeBytes(OutfitDraft.GREY_PNG); "imported/my_outfits/preview/grey.png" }
+            runOnUiThread { wait.dismiss(); showEditor(); refreshDraft() }
+        }
+    }
+
+    private fun refreshDraft() {
+        if (draftDirty.getAndSet(true)) return
+        worker.execute {
+            draftDirty.set(false)
+            val d = draft ?: return@execute; val body = draftBody ?: return@execute
+            val pd = d.previewDraft()
+            val f = pd.compute(model, body, draftColors)
+            val parts = PartBuilder.build(model, false, f.hiddenBody, setOf("my_${d.id}")).toMutableList()
+            parts.add(Part("draft", f.pos, weldedNormals(f.pos, f.keepTris, f.pos.size / 3), pd.raw.uv, f.keepTris, draftTex!!, false, null,
+                IntArray(0), FloatArray(0), IntArray(0), FloatArray(0), 1))
+            runOnUiThread { view3d.show(parts) }
+        }
+    }
+
+    private fun closeEditor() { draft = null; draftBody = null; lastFit = null; tabBar.visibility = View.VISIBLE; showTab("Clothes"); changed() }
+
+    private fun showEditor() {
+        val d = draft ?: return
+        content.removeAllViews()
+        content.addView(TextView(this).apply { text = "Fit outfit"; setTextColor(accent); textSize = 17f; typeface = Typeface.DEFAULT_BOLD; setPadding(0, dp(8), 0, dp(4)) })
+        content.addView(EditText(this).apply { setText(d.name); setTextColor(fg); inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_WORDS
+            setOnFocusChangeListener { _, f -> if (!f) d.name = text.toString().ifBlank { "Outfit" } }; addTextChangedListener(object : android.text.TextWatcher {
+                override fun afterTextChanged(e: android.text.Editable?) { d.name = e.toString().ifBlank { "Outfit" } }
+                override fun beforeTextChanged(a: CharSequence?, b: Int, c: Int, e: Int) {}; override fun onTextChanged(a: CharSequence?, b: Int, c: Int, e: Int) {} }) })
+        fun sl(label: String, key: String, min: Float, max: Float, fmt: (Float) -> String) = slider(label, d.p[key]!!, min, max, fmt) { d.p[key] = it; refreshDraft() }
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        row.addView(chip("Turn 90°", false) { d.p["turn"] = d.p["turn"]!! + 1; worker.execute { d.autoPlace(draftBody!!); runOnUiThread { refreshDraft() } } })
+        row.addView(chip("Stand upright", false) { d.p["upright"] = d.p["upright"]!! + 1; worker.execute { d.autoPlace(draftBody!!); runOnUiThread { refreshDraft() } } })
+        row.addView(chip("Re-centre", false) { worker.execute { d.autoPlace(draftBody!!); runOnUiThread { refreshDraft() } } })
+        content.addView(HorizontalScrollView(this).apply { addView(row) })
+        header("Size and position")
+        sl("Size", "size", 0.6f, 1.4f, ::pct); sl("Width", "width", 0.7f, 1.3f, ::pct); sl("Height", "height", 0.7f, 1.3f, ::pct); sl("Depth", "depth", 0.7f, 1.3f, ::pct)
+        sl("Up / down", "up", -3f, 3f) { "%+.0f cm".format(it * 10) }; sl("Back / forward", "forward", -2f, 2f) { "%+.0f cm".format(it * 10) }; sl("Left / right", "side", -2f, 2f) { "%+.0f cm".format(it * 10) }
+        header("Match the pose")
+        sl("Left arm", "armL", -45f, 45f) { "%+.0f°".format(it) }; sl("Right arm", "armR", -45f, 45f) { "%+.0f°".format(it) }; sl("Legs apart", "legs", -25f, 25f) { "%+.0f°".format(it) }
+        header("Fit and clipping")
+        sl("Loosen / tighten", "loosen", -0.5f, 1f) { "%+.0f mm".format(it * 100) }
+        sl("Keep outside the body by", "clip", 0f, 0.3f) { if (it < 0.005f) "off" else "%.0f mm".format(it * 100) }
+        sl("Remove the model's own skin", "skinCut", 0f, 1f) { if (it < 0.01f) "off" else pct(it) }
+        content.addView(Switch(this).apply { text = "Hide body underneath"; isChecked = d.p["hideBody"]!! > 0.5f; setTextColor(fg); setPadding(0, dp(8), 0, dp(8))
+            setOnCheckedChangeListener { _, c -> d.p["hideBody"] = if (c) 1f else 0f; refreshDraft() } })
+        button("Save outfit") {
+            val wait = AlertDialog.Builder(this).setMessage("Saving…").setCancelable(false).show()
+            worker.execute {
+                val r = runCatching { val f = d.compute(model, draftBody!!, draftColors); d.bake(model, draftBody!!, f, filesDir, AndroidTextures) }
+                runOnUiThread { wait.dismiss()
+                    r.onSuccess { model.state.clothes.add("my_${d.id}"); reloadLibrary { closeEditor(); saveLast() } }
+                     .onFailure { toast("Couldn't save: ${it.message}") } }
+            }
+        }
+        content.addView(TextView(this).apply { text = "Cancel"; setTextColor(dim); textSize = 15f; gravity = Gravity.CENTER; setPadding(0, dp(12), 0, dp(12)); setOnClickListener { closeEditor() } })
+        content.addView(TextView(this).apply { setTextColor(dim); textSize = 12f
+            text = "Tips: turn and stand the outfit up first if it's lying down or facing away. Use Size and Up/down to line it up, then the arm and leg angles if the outfit was made in a different pose. " +
+                "Raise 'Keep outside the body' to stop skin poking through. The saved outfit follows every body slider, so you can change the body afterwards." })
+    }
+
+    private fun startOutfitImport(f: java.io.File, tex: java.io.File?) {
+        val wait = AlertDialog.Builder(this).setMessage("Loading model…").setCancelable(false).show()
+        worker.execute {
+            val r = runCatching {
+                var m = MeshIO.load(f, tex)
+                if (m.tris.size / 3 > 80000) m = MeshIO.simplify(m, 60000)
+                val d = OutfitDraft("o" + System.currentTimeMillis().toString(36), f.nameWithoutExtension.replace('_', ' ').take(40), m)
+                d.autoPlace(BodyQuery(model)); d
+            }
+            runOnUiThread { wait.dismiss(); r.onSuccess { openEditor(it) }.onFailure { AlertDialog.Builder(this).setTitle("Couldn't load").setMessage(it.message ?: it.toString()).setPositiveButton("OK", null).show() } }
+        }
+    }
+
+    private fun displayName(uri: Uri): String = contentResolver.query(uri, null, null, null, null)?.use { c ->
+        val i = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME); if (c.moveToFirst() && i >= 0) c.getString(i) else null } ?: (uri.lastPathSegment ?: "model")
+
     private val catalog by lazy {
         val a = org.json.JSONArray(String(assets.open("ph/catalog.json").use { it.readBytes() }))
         (0 until a.length()).map { a.getJSONObject(it) }
@@ -369,6 +485,7 @@ class MainActivity : Activity() {
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(req: Int, res: Int, data: Intent?) {
         super.onActivityResult(req, res, data)
+        if (req == REQ_OUTFIT_TEX && (res != RESULT_OK || data?.data == null)) { pendingOutfit?.let { startOutfitImport(it, null) }; return }
         val uri: Uri = data?.data ?: return
         if (res != RESULT_OK) return
         when (req) {
@@ -382,6 +499,21 @@ class MainActivity : Activity() {
             }
             REQ_SAVE -> runCatching { contentResolver.openOutputStream(uri)!!.use { it.write(model.state.toJson().toString(2).toByteArray()) } }
                 .onSuccess { toast("Saved") }.onFailure { toast("Save failed: ${it.message}") }
+            REQ_OUTFIT -> {
+                val name = displayName(uri)
+                val f = java.io.File(cacheDir, name.replace(Regex("[^A-Za-z0-9._-]"), "_"))
+                contentResolver.openInputStream(uri)!!.use { i -> f.outputStream().use { i.copyTo(it) } }
+                if (f.extension.lowercase() == "obj") { pendingOutfit = f
+                    AlertDialog.Builder(this).setMessage("Pick the texture image that goes with this .obj (or skip for plain grey).")
+                        .setPositiveButton("Pick texture") { _, _ -> startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "image/*" }, REQ_OUTFIT_TEX) }
+                        .setNegativeButton("Skip") { _, _ -> startOutfitImport(f, null) }.show()
+                } else startOutfitImport(f, null)
+            }
+            REQ_OUTFIT_TEX -> {
+                val t = java.io.File(cacheDir, "outfit_tex." + displayName(uri).substringAfterLast('.', "png").lowercase())
+                contentResolver.openInputStream(uri)!!.use { i -> t.outputStream().use { i.copyTo(it) } }
+                pendingOutfit?.let { startOutfitImport(it, t) }
+            }
             REQ_PACK -> {
                 val name = (uri.lastPathSegment ?: "pack").substringAfterLast('/').substringAfterLast(':').removeSuffix(".zip")
                 val id = name.lowercase().replace(Regex("(_cc0|_ccby|_cc-by)$"), "").replace(Regex("[^a-z0-9_]"), "_")
@@ -402,5 +534,5 @@ class MainActivity : Activity() {
     override fun onPause() { super.onPause(); if (::view3d.isInitialized) view3d.onPause(); if (::model.isInitialized) saveLast() }
     override fun onResume() { super.onResume(); if (::view3d.isInitialized) view3d.onResume() }
 
-    companion object { const val REQ_GLB = 1; const val REQ_SAVE = 2; const val REQ_LOAD = 3; const val REQ_PACK = 4 }
+    companion object { const val REQ_GLB = 1; const val REQ_SAVE = 2; const val REQ_LOAD = 3; const val REQ_PACK = 4; const val REQ_OUTFIT = 5; const val REQ_OUTFIT_TEX = 6 }
 }

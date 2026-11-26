@@ -14,7 +14,7 @@ class Part(
 
 object PartBuilder {
     /** forExport: neutral face, skin weights, and the body under the clothes kept as its own part. */
-    fun build(model: HumanModel, forExport: Boolean): List<Part> {
+    fun build(model: HumanModel, forExport: Boolean, extraHidden: BooleanArray? = null, skip: Set<String> = emptySet()): List<Part> {
         val lib = model.lib; val v = if (forExport) model.neutral else model.verts; val rig = lib.rig
         val out = ArrayList<Part>()
         val bm = lib.base
@@ -23,10 +23,11 @@ object PartBuilder {
         val j = if (forExport) IntArray(n * 4) { rig.joints[bm.renderMap[it / 4] * 4 + it % 4] } else IntArray(0)
         val w = if (forExport) FloatArray(n * 4) { rig.weights[bm.renderMap[it / 4] * 4 + it % 4] } else FloatArray(0)
         val skin = lib.skins[model.state.skin.coerceIn(0, lib.skins.size - 1)]
-        val ids = model.proxyIds()
+        val ids = model.proxyIds().filter { it.first !in skip }
         // body vertices covered by the chosen clothes
         val hidden = BooleanArray(bm.nV)
         for ((id, _) in ids) lib.proxies.first { it.id == id }.delete.forEach { if (it < bm.nV) hidden[it] = true }
+        extraHidden?.let { e -> for (i in e.indices) if (e[i]) hidden[i] = true }
         val vis = ArrayList<Int>(); val under = ArrayList<Int>()
         var t = 0
         while (t < bm.tris.size) {

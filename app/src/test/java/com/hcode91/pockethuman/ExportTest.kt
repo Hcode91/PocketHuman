@@ -45,3 +45,40 @@ class ImportTest {
         File(System.getProperty("java.io.tmpdir"), "ph_packs.glb").outputStream().use { GlbExporter.write(m, it) }
     }
 }
+
+class OutfitTest {
+    @Test fun importsMeshyOutfit() {
+        val src = File("/home/claude/meshy_in/baked.glb"); if (!src.exists()) { println("no test model"); return }
+        val tmp = java.nio.file.Files.createTempDirectory("pho").toFile()
+        val copy = TextureSink { s, dir, base, _ -> dir.mkdirs(); val n = base + "." + s.extension.lowercase(); s.copyTo(File(dir, n), true); n }
+        val srcOf = AssetSource { p -> if (p.startsWith("imported/")) File(tmp, p).readBytes() else File("src/main/assets/ph", p).readBytes() }
+        var lib = Library(srcOf, tmp)
+        val m = HumanModel(lib); m.rebuild()
+        var raw = MeshIO.load(src); println("loaded ${raw.nv} verts ${raw.tris.size / 3} tris tex ${raw.texture?.size}")
+        raw = MeshIO.simplify(raw, 60000); println("simplified to ${raw.tris.size / 3} tris")
+        val rgb = File("/tmp/tex1024.rgb").readBytes()
+        val colors = ColorSampler { u, v -> val x = (u.coerceIn(0f, 0.9999f) * 1024).toInt(); val y = (v.coerceIn(0f, 0.9999f) * 1024).toInt(); val o = (y * 1024 + x) * 3
+            ((rgb[o].toInt() and 0xff) shl 16) or ((rgb[o + 1].toInt() and 0xff) shl 8) or (rgb[o + 2].toInt() and 0xff) }
+        val d = OutfitDraft("test1", "Akari uniform", raw)
+        val body = BodyQuery(m)
+        d.autoPlace(body); println("auto scale ${d.autoScale} shift ${d.autoShift.toList()}")
+        d.p["skinCut"] = 0.6f
+        val tp = System.currentTimeMillis(); val pf = d.previewDraft().compute(m, body, colors); println("preview compute ms ${System.currentTimeMillis() - tp} (${pf.keepTris.size / 3} tris)")
+        val t0 = System.currentTimeMillis(); val f = d.compute(m, body, colors); println("compute ms ${System.currentTimeMillis() - t0}, kept tris ${f.keepTris.size / 3}, hidden body ${f.hiddenBody.count { it }}")
+        var inside = 0; var checked = 0; var minD = 0f
+        for (i in 0 until f.pos.size / 3) { val h = body.nearest(f.pos[i * 3], f.pos[i * 3 + 1], f.pos[i * 3 + 2]) ?: continue; if (h.dist > 1.5f) continue
+            val nn = body.normalAt(h); val dd = (f.pos[i * 3] - h.x) * nn[0] + (f.pos[i * 3 + 1] - h.y) * nn[1] + (f.pos[i * 3 + 2] - h.z) * nn[2]; checked++; if (dd < 0) { inside++; minD = minOf(minD, dd) } }
+        println("after fit: inside $inside of $checked, deepest $minD")
+        d.bake(m, body, f, tmp, copy)
+        lib = Library(srcOf, tmp)
+        val m2 = HumanModel(lib); m2.state.load(m.state.toJson()); m2.state.hair = null; m2.state.clothes.add("my_test1"); m2.rebuild()
+        run { val pm = lib.proxy("my_test1"); val fit = pm.fit(m2.verts)
+            val used = f.keepTris.distinct()
+            var mx = 0f; for ((j, i) in used.withIndex()) for (k in 0..2) mx = maxOf(mx, Math.abs(fit[j * 3 + k] - f.pos[i * 3 + k]))
+            println("bake round-trip max error (dm): $mx, verts ${used.size} vs ${pm.n}") }
+        File(System.getProperty("java.io.tmpdir"), "ph_outfit.glb").outputStream().use { GlbExporter.write(m2, it) }
+        m2.state.macro["weight"] = 0.9f; m2.state.macro["height"] = 0.9f; m2.rebuild()
+        File(System.getProperty("java.io.tmpdir"), "ph_outfit_heavy.glb").outputStream().use { GlbExporter.write(m2, it) }
+        val back = OutfitDraft.loadSaved(tmp, "test1"); println("reloaded for editing: ${back?.name} armL=${back?.p?.get("armL")}")
+    }
+}

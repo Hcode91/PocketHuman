@@ -86,7 +86,7 @@ class HumanView(ctx: Context, private var lib: Library) : GLSurfaceView(ctx) {
             // opaque first, then cut-out parts (hair, brows, lashes)
             for (pass in 0..1) for (g in gpu) {
                 if ((pass == 1) != g.part.alpha) continue
-                if (g.part.alpha) glDisable(GL_CULL_FACE) else { glEnable(GL_CULL_FACE); glCullFace(GL_BACK) }
+                if (g.part.alpha || g.part.name.startsWith("my_") || g.part.name == "draft") glDisable(GL_CULL_FACE) else { glEnable(GL_CULL_FACE); glCullFace(GL_BACK) }
                 glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, texture(g.part.texture))
                 glUniform1i(glGetUniformLocation(prog, "uTex"), 0)
                 glUniform1f(glGetUniformLocation(prog, "uCut"), if (g.part.alpha) 0.4f else -1f)

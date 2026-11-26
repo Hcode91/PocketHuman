@@ -78,6 +78,7 @@ object GlbExporter {
                 .put("pbrMetallicRoughness", JSONObject().put("baseColorTexture", JSONObject().put("index", tex(p.texture))).put("metallicFactor", 0).put("roughnessFactor", if (p.name.startsWith("eyes")) 0.2 else 0.7))
             p.normalTex?.let { mat.put("normalTexture", JSONObject().put("index", tex(it))) }
             if (p.alpha) mat.put("alphaMode", "MASK").put("alphaCutoff", 0.4).put("doubleSided", true)
+            else if (p.name.startsWith("my_")) mat.put("doubleSided", true)
             materials.put(mat)
             val pos = FloatArray(p.pos.size) { (p.pos[it] - if (it % 3 == 1) floor else 0f) * SCALE }
             val attrs = JSONObject().put("POSITION", accF(pos, 3, "VEC3", minmax = true)).put("NORMAL", accF(p.nrm, 3, "VEC3"))
