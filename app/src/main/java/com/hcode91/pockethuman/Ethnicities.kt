@@ -40,8 +40,8 @@ object Credits {
     fun forCharacter(model: HumanModel): List<Credit> {
         val lib = model.lib; val out = LinkedHashMap<String, Credit>()
         for ((id, _) in model.proxyIds()) lib.credits[id]?.let { out[it.asset] = it }
-        lib.skins.getOrNull(model.state.skin)?.let { sk -> lib.credits[sk.texture]?.let { out[it.asset] = it } }
-        for (g in lib.defs.groups) for (sl in g.sliders) if ((model.state.details[sl.id] ?: 0f) != 0f)
+        lib.credits[model.selectedSkin().texture]?.let { out[it.asset] = it }
+        for (g in lib.defs.groups.filter { model.canUseGroup(it) }) for (sl in g.sliders) if ((model.state.details[sl.id] ?: 0f) != 0f)
             for (t in sl.pos + sl.neg) lib.credits[t.substringAfterLast('/')]?.let { out[it.asset] = it }
         return out.values.toList()
     }

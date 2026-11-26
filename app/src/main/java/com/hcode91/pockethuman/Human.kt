@@ -2,7 +2,7 @@ package com.hcode91.pockethuman
 
 import org.json.JSONObject
 
-/** Everything the user has chosen. Ages are adult only (25 to 90). */
+/** Everything the user has chosen. */
 class HumanState {
     val macro = linkedMapOf(
         "gender" to 0f, "age" to 0.5f, "muscle" to 0.5f, "weight" to 0.5f,
@@ -18,6 +18,26 @@ class HumanState {
     var hairVariant = 0
     var name = "Character"
     var adult = false
+        get() = field && !isUnderage
+        set(value) { field = value && !isUnderage }
+    val ageValue: Float get() = macro.getValue("age").let { if (it.isFinite()) it.coerceIn(0f, 1f) else 0.5f }
+    val isUnderage: Boolean get() = isUnderage(ageValue)
+
+    companion object {
+        const val MIN_AGE_YEARS = 1
+        const val MAX_AGE_YEARS = 90
+        private const val YOUNG_AGE_YEARS = 25
+        private const val ADULT_AGE = 17f / 48f
+
+        // Keep 0.5 = 25 and 1 = 90 for existing saves.
+        fun yearsForAge(age: Float): Float = if (age < 0.5f)
+            MIN_AGE_YEARS + age * 48f else YOUNG_AGE_YEARS + (age - 0.5f) * 130f
+
+        fun ageForYears(years: Int): Float = if (years < YOUNG_AGE_YEARS)
+            (years - MIN_AGE_YEARS) / 48f else 0.5f + (years - YOUNG_AGE_YEARS) / 130f
+
+        fun isUnderage(age: Float) = age < ADULT_AGE
+    }
     var autoSkin = true
     /** 3D male genital piece (needs adult on): 0 = by gender, 1 = always, 2 = never */
     var genitals = 0
@@ -48,7 +68,7 @@ class HumanState {
     }
     fun load(j: JSONObject) {
         j.optJSONObject("macro")?.let { m -> for (k in macro.keys) if (m.has(k)) macro[k] = m.getDouble(k).toFloat() }
-        macro["age"] = macro["age"]!!.coerceIn(0.5f, 1f)
+        macro["age"] = ageValue
         j.optJSONObject("race")?.let { m -> for (k in race.keys) if (m.has(k)) race[k] = m.getDouble(k).toFloat() }
         details.clear(); j.optJSONObject("details")?.let { m -> for (k in m.keys()) details[k] = m.getDouble(k).toFloat() }
         skin = j.optInt("skin", 0); eyeColour = j.optInt("eyeColour", 0); hairVariant = j.optInt("hairVariant", 0)
@@ -67,7 +87,7 @@ class HumanModel(val lib: Library) {
     /** The body's skin texture: the chosen skin, or a copy of it with genital detail painted in when that is on. */
     fun bodyTexture(skin: Skin): String {
         val st = state
-        val want = st.adult && !skin.adult && (st.genitalDetail == 1 || (st.genitalDetail == 0 && st.macro["gender"]!! < 0.5f))
+        val want = st.adult && !useYouthOutfit && !skin.adult && (st.genitalDetail == 1 || (st.genitalDetail == 0 && st.macro["gender"]!! < 0.5f))
         if (!want) return skin.texture
         return runCatching { detailProvider?.invoke(lib, skin.texture) }.getOrNull() ?: skin.texture
     }
@@ -85,6 +105,23 @@ class HumanModel(val lib: Library) {
     var verts = lib.base.verts.copyOf()
     /** Same shape with a neutral face (what gets exported). */
     var neutral = verts
+    private var builtUnderage = false
+    val useYouthOutfit: Boolean get() = builtUnderage || state.isUnderage
+
+    fun canUseSkin(skin: Skin): Boolean =
+        if (useYouthOutfit) skin.system && !skin.adult else !skin.adult || state.adult
+
+    fun canUseGroup(group: SliderGroup, underage: Boolean = useYouthOutfit): Boolean =
+        (!group.adult || (state.adult && !underage)) &&
+            (!underage || (group.name != "breast" && group.sliders.none { lib.isAdultCommunityAsset(it.id) }))
+
+    fun canUseFaceShape(key: String): Boolean =
+        !useYouthOutfit || !lib.isAdultCommunityAsset(key.removePrefix("pack:"))
+
+    fun selectedSkin(): Skin {
+        val selected = lib.skins.getOrNull(state.skin)
+        return selected?.takeIf(::canUseSkin) ?: lib.skins[matchSkin()]
+    }
 
     private fun components(name: String, value: Float): List<Pair<String, Float>> {
         val out = ArrayList<Pair<String, Float>>()
@@ -99,9 +136,9 @@ class HumanModel(val lib: Library) {
     }
 
     /** The list of (target, weight) the macro sliders ask for. */
-    fun macroStack(): List<Pair<String, Float>> {
+    fun macroStack(age: Float = state.ageValue): List<Pair<String, Float>> {
         val m = state.macro
-        val c = m.keys.associateWith { components(it, m[it]!!) }
+        val c = m.keys.associateWith { if (it == "age") ageComponents(age) else components(it, m.getValue(it)) }
         val st = ArrayList<Pair<String, Float>>()
         for ((race, rw) in state.race) for ((a, aw) in c["age"]!!) for ((g, gw) in c["gender"]!!)
             st.add("macrodetails/$race-$g-$a" to rw * gw * aw)
@@ -110,7 +147,7 @@ class HumanModel(val lib: Library) {
             st.add("macrodetails/universal-$g-$a-$mu-$we" to base)
             for ((h, hw) in c["height"]!!) st.add("macrodetails/height/$g-$a-$mu-$we-$h" to base * hw)
             for ((pr, pw) in c["proportions"]!!) st.add("macrodetails/proportions/$g-$a-$mu-$we-$pr" to base * pw)
-            if (g == "female") for ((cu, cw) in c["cupsize"]!!) for ((fi, fw) in c["firmness"]!!) {
+            if (g == "female" && !HumanState.isUnderage(age) && a != "child") for ((cu, cw) in c["cupsize"]!!) for ((fi, fw) in c["firmness"]!!) {
                 val n = "breast/$g-$a-$mu-$we-$cu-$fi"
                 // breasts are female-only targets: weighted without the gender factor, like MakeHuman
                 if (!n.contains("averagecup-averagefirmness")) st.add(n to aw * mw * ww * cw * fw)
@@ -119,7 +156,21 @@ class HumanModel(val lib: Library) {
         return st
     }
 
+    private fun ageComponents(age: Float): List<Pair<String, Float>> {
+        if (age >= 0.5f) return components("age", age)
+        val child = 0.1875f // MPFB2’s child anchor at age 10.
+        return if (age <= child) {
+            val t = age / child
+            listOf("baby" to 1f - t, "child" to t)
+        } else {
+            val t = (age - child) / (0.5f - child)
+            listOf("child" to 1f - t, "young" to t)
+        }
+    }
+
     fun rebuild() {
+        val age = state.ageValue
+        val underage = HumanState.isUnderage(age)
         val v = lib.base.verts.copyOf()
         fun apply(name: String, w: Float) {
             if (w < 0.001f && w > -0.001f) return
@@ -127,17 +178,21 @@ class HumanModel(val lib: Library) {
             val (idx, d) = t
             for (i in idx.indices) { val o = idx[i] * 3; v[o] += w * d[i * 3]; v[o + 1] += w * d[i * 3 + 1]; v[o + 2] += w * d[i * 3 + 2] }
         }
-        for ((n, w) in macroStack()) if (w > 0.01f) apply(n, w)
+        for ((n, w) in macroStack(age)) if (w > 0.01f) apply(n, w)
         for (g in lib.defs.groups) {
-            if (g.adult && !state.adult) continue
+            if (!canUseGroup(g, underage)) continue
             for (s in g.sliders) {
                 val x = state.details[s.id] ?: continue
                 if (x > 0) s.pos.forEach { apply(it, x) } else if (x < 0) s.neg.forEach { apply(it, -x) }
             }
         }
         neutral = v.copyOf()
-        for ((key, w) in state.expression) if (w > 0.001f) for ((t, tw) in lib.faceShapeTargets(key, state.race)) apply(t, w * tw)
+        for ((key, w) in state.expression) {
+            if (w <= 0.001f || (underage && lib.isAdultCommunityAsset(key.removePrefix("pack:")))) continue
+            for ((t, tw) in lib.faceShapeTargets(key, state.race)) apply(t, w * tw)
+        }
         verts = v
+        builtUnderage = underage
         if (state.autoSkin) state.skin = matchSkin()
     }
 
@@ -148,7 +203,7 @@ class HumanModel(val lib: Library) {
         val y = ageYears(); val age = if (y < 42) "young" else if (y < 62) "middleage" else "old"
         val sk = lib.skins
         fun score(s: Skin) = (if (s.system) 4 else 0) + (if (s.race == race) 4 else 0) + (if (s.gender == gender) 3 else 0) + (if (s.age == age) 2 else 0) - (if (s.adult) 10 else 0)
-        return sk.indices.maxByOrNull { score(sk[it]) } ?: 0
+        return sk.indices.filter { canUseSkin(sk[it]) }.maxByOrNull { score(sk[it]) } ?: 0
     }
 
     fun proxyIds(): List<Pair<String, Int>> {
@@ -161,12 +216,14 @@ class HumanModel(val lib: Library) {
         val worn = lib.proxies.filter { it.kind == "clothes" && it.id in state.clothes }
         worn.sortedBy { it.zdepth }.forEach { out.add(it.id to 0) }
         // anatomy pieces: adult only, and left off when clothes cover the crotch
-        if (state.adult) {
+        if (state.adult && !useYouthOutfit) {
             val crotch = lib.crotchVerts
             val covered = worn.any { p -> p.delete.any { it in crotch } }
             if (!covered) lib.proxies.filter { it.kind == "anatomy" && it.id in state.clothes }.forEach { out.add(it.id to 0) }
         }
-        return out.filter { p -> lib.proxies.any { it.id == p.first } }
+        return out.filter { (id, _) ->
+            (!useYouthOutfit || !lib.isAdultCommunityAsset(id)) && lib.proxies.any { it.id == id }
+        }
     }
 
     fun heightMetres(): Float {
@@ -174,7 +231,7 @@ class HumanModel(val lib: Library) {
         for (i in 0 until 13380) { val y = verts[i * 3 + 1]; if (y < lo) lo = y; if (y > hi) hi = y }
         return (hi - lo) * 0.1f
     }
-    fun ageYears() = 25f + (state.macro["age"]!! - 0.5f) * 2f * 65f
+    fun ageYears() = HumanState.yearsForAge(state.ageValue)
 }
 
 /** Smooth normals, welded by position so UV seams don't show. */

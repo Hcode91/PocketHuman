@@ -13,13 +13,27 @@ rmap = np.frombuffer(b, '<u2', nR, o).astype(int); o += nR * 2
 ruv = np.frombuffer(b, '<f4', nR * 2, o).reshape(-1, 2); o += nR * 8
 nT = struct.unpack_from('<I', b, o)[0]; o += 4
 tris = np.frombuffer(b, '<u4', nT * 3, o).reshape(-1, 3)
-tidx = json.loads(rd('targets.json')); tb = rd('targets.bin')
+def target_pack(prefix):
+    blob = rd(prefix + '.bin')
+    return {key: (blob, off, n) for key, (off, n) in json.loads(rd(prefix + '.json')).items()}
+
+
+tidx = target_pack('targets') | target_pack('age_targets')
+
+
 def target(name):
-    off, n = tidx[name]
-    return np.frombuffer(tb, '<u2', n, off).astype(int), np.frombuffer(tb, '<f2', n * 3, off + n * 2).reshape(-1, 3).astype(np.float32)
+    blob, off, n = tidx[name]
+    return np.frombuffer(blob, '<u2', n, off).astype(int), np.frombuffer(blob, '<f2', n * 3, off + n * 2).reshape(-1, 3).astype(np.float32)
 sl = json.loads(rd('sliders.json')); macro = sl['macro']['macrotargets']
 
 def components(name, value):
+    if name == 'age' and value < 0.5:
+        child = 0.1875
+        if value <= child:
+            t = value / child
+            return [('baby', 1 - t), ('child', t)]
+        t = (value - child) / (0.5 - child)
+        return [('child', 1 - t), ('young', t)]
     out = []
     for p in macro[name]['parts']:
         if p['lowest'] < value < p['highest']:
@@ -29,6 +43,8 @@ def components(name, value):
     return out
 m = dict(gender=0.0, age=0.5, muscle=0.5, weight=0.5, proportions=0.5, height=0.5, cupsize=0.5, firmness=0.5)
 m.update(S.get('macro', {}))
+m['age'] = min(1, max(0, m['age']))
+underage = m['age'] < 17 / 48
 race = S.get('race', {'african': 1 / 3, 'asian': 1 / 3, 'caucasian': 1 / 3})
 C = {k: components(k, m[k]) for k in m}
 stack = []
@@ -42,13 +58,15 @@ for g, gw in C['gender']:
                 stack.append((f'macrodetails/universal-{g}-{a}-{mu}-{we}', gw * aw * mw * ww))
                 for h, hw in C['height']: stack.append((f'macrodetails/height/{g}-{a}-{mu}-{we}-{h}', gw * aw * mw * ww * hw))
                 for pr, pw in C['proportions']: stack.append((f'macrodetails/proportions/{g}-{a}-{mu}-{we}-{pr}', gw * aw * mw * ww * pw))
-                if g == 'female':
+                if g == 'female' and not underage and a != 'child':
                     for cu, cw in C['cupsize']:
                         for fi, fw in C['firmness']:
                             n = f'breast/{g}-{a}-{mu}-{we}-{cu}-{fi}'
                             if 'averagecup-averagefirmness' not in n: stack.append((n, aw * mw * ww * cw * fw))
 for sid, val in S.get('sliders', {}).items():
     for grp in sl['groups']:
+        if underage and (grp['adult'] or grp['group'] == 'breast'):
+            continue
         for s_ in grp['sliders']:
             if s_['id'] == sid:
                 for t in (s_['pos'] if val > 0 else s_['neg']): stack.append((t, abs(val)))
@@ -114,8 +132,16 @@ def add_mesh(name, Pp, uvp, T, J4, W4, texfile, alpha):
         'indices': acc(T.astype('<u4').ravel(), 5125, 'SCALAR', 34963), 'material': len(materials) - 1}]})
     nodes.append({'name': name, 'mesh': len(meshes) - 1, 'skin': 0})
 skins = json.loads(rd('skins.json'))
-skin = skins[S.get('skin', 0)]['texture']
-add_mesh('body', P[rmap] * SCALE, ruv, tris, WJ[rmap], WW[rmap], skin, False)
+skin = skins[S.get('skin', 0)]
+if underage:
+    if not skin['system'] or skin['adult']:
+        skin = next(sk for sk in skins if sk['system'] and not sk['adult'])
+    centres = V[rmap[tris]].mean(axis=1)
+    x, y = abs(centres[:, 0]), centres[:, 1]
+    covered = (x < 2.65) & (y >= -2.7) & (y <= 5.55 + np.minimum(x, 1) * 0.45)
+    add_mesh('youth_base_outfit', P[rmap] * SCALE, ruv, tris[covered], WJ[rmap], WW[rmap], 'youth_base_outfit.png', False)
+    tris = tris[~covered]
+add_mesh('body', P[rmap] * SCALE, ruv, tris, WJ[rmap], WW[rmap], skin['texture'], False)
 picks = S.get('proxies', ['eyes_high-poly', 'eyebrows_eyebrow001', 'eyelashes_eyelashes01', 'teeth_teeth_base', 'tongue_tongue01', 'hair_ponytail01'])
 for pid in picks:
     pr = [p for p in prox if p['id'] == pid][0]

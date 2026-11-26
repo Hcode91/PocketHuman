@@ -29,6 +29,17 @@ class BaseMesh(am: AssetSource) {
     val renderMap: IntArray
     val uv: FloatArray
     val tris: IntArray
+    // The same faces stay covered as the body morphs, even without a separate outfit.
+    val youthOutfitFaces: BooleanArray by lazy {
+        BooleanArray(tris.size / 3) { face ->
+            val a = renderMap[tris[face * 3]] * 3
+            val b = renderMap[tris[face * 3 + 1]] * 3
+            val c = renderMap[tris[face * 3 + 2]] * 3
+            val x = kotlin.math.abs((verts[a] + verts[b] + verts[c]) / 3f)
+            val y = (verts[a + 1] + verts[b + 1] + verts[c + 1]) / 3f
+            x < 2.65f && y in -2.7f..(5.55f + minOf(x, 1f) * 0.45f)
+        }
+    }
     init {
         val r = Bin(am.bytes("base.bin")); r.skip(4)
         nV = r.int(); verts = r.floats(nV * 3)
@@ -42,7 +53,10 @@ class Targets(am: AssetSource) {
     private val blobs = ArrayList<ByteBuffer>()
     private val index = HashMap<String, IntArray>()   // name -> (blob, offset, count)
     private val cache = HashMap<String, Pair<IntArray, FloatArray>>()
-    init { add(am.bytes("targets.bin"), am.json("targets.json")) }
+    init {
+        add(am.bytes("targets.bin"), am.json("targets.json"))
+        add(am.bytes("age_targets.bin"), am.json("age_targets.json"))
+    }
     /** Adds a targets.bin/targets.json pair (bundled or from an imported pack). */
     fun add(bin: ByteArray, indexJson: String) {
         val b = blobs.size; blobs.add(ByteBuffer.wrap(bin).order(ByteOrder.LITTLE_ENDIAN))
@@ -186,6 +200,17 @@ class Library(val am: AssetSource, importRoot: java.io.File? = null) {
     val credits = HashMap<String, Credit>()
     val installed = ArrayList<InstalledPack>()
     private val meshCache = HashMap<String, ProxyMesh>()
+    private val adultCommunityIds by lazy {
+        val entries = JSONArray(am.json("community.json"))
+        (0 until entries.length()).map { entries.getJSONObject(it) }
+            .filter { it.optInt("x") == 1 }.map { it.getInt("n") }.toSet()
+    }
+
+    fun isAdultCommunityAsset(id: String): Boolean {
+        if (!id.startsWith("community_")) return false
+        val entry = id.removePrefix("community_").takeWhile { it.isDigit() }.toIntOrNull() ?: return false
+        return entry in adultCommunityIds
+    }
 
     private fun credit(o: JSONObject?): Credit? = o?.let { Credit(it.optString("asset"), it.optString("pack"), it.optString("author"), it.optString("license", "CC0")) }
     private fun loadProxies(p: JSONArray) {

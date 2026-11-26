@@ -57,7 +57,7 @@ object GlbExporter {
             textures.put(JSONObject().put("source", images.length() - 1).put("sampler", 0)); textures.length() - 1
         }
         // every face shape (MakeHuman units + ARKit units) as an offset field over the base mesh, in metres
-        val shapeKeys = model.lib.faceShapes()
+        val shapeKeys = model.lib.faceShapes().filter(model::canUseFaceShape)
         val shapeDeltas = shapeKeys.map { k -> model.lib.faceShapeDelta(k, model.state.race).also { d -> for (i in d.indices) d[i] *= SCALE } }
         fun sparseTarget(d: FloatArray): Int {
             val idx = ArrayList<Int>()

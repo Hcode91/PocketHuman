@@ -2,7 +2,7 @@
 """PocketHuman asset builder.
 
 Converts the CC0 MakeHuman / MPFB2 data into compact files the app loads:
-  base mesh, morph targets (adult only), slider definitions, Mixamo rig + weights,
+  base mesh, morph targets, slider definitions, Mixamo rig + weights,
   proxies (eyes, eyebrows, eyelashes, teeth, tongue, hair), skins.
 
 usage: build_assets.py MPFB2_REPO SYSTEM_ASSETS_DIR SKINS01_DIR OUT_DIR
@@ -11,6 +11,8 @@ All inputs are CC0 (see https://static.makehumancommunity.org/about/license.html
 import sys, os, gzip, json, struct, io, re, glob
 import numpy as np
 from PIL import Image
+from pathlib import Path
+from build_age_targets import build_age_targets
 
 MPFB, SYS, SKINS01, OUT = sys.argv[1:5]
 FACEUNITS = sys.argv[5] if len(sys.argv) > 5 else None   # faceunits01 pack (ARKit-style), CC0
@@ -18,7 +20,7 @@ DATA = os.path.join(MPFB, 'src', 'mpfb', 'data')
 os.makedirs(OUT, exist_ok=True)
 def out(*p): return os.path.join(OUT, *p)
 
-# Nothing for babies or children goes in: the app only makes adults.
+# Youth body macros are built into a separate pack. Leave youth detail targets out of the main pack.
 def adult_ok(name):
     return not re.search(r'(^|[-_/])(baby|child)([-_.]|$)', name)
 
@@ -110,7 +112,8 @@ if FACEUNITS:
     print('ARKit face units', len(arkit))
 open(out('targets.bin'), 'wb').write(blob.getvalue())
 json.dump(index, open(out('targets.json'), 'w'), separators=(',', ':'))
-print('targets', len(index), 'skipped (child/baby)', skipped, 'bytes', blob.tell())
+print('targets', len(index), 'excluded from main pack (child/baby)', skipped, 'bytes', blob.tell())
+build_age_targets(Path(MPFB), Path(OUT))
 
 # ---------------------------------------------------------------- sliders
 tj = json.load(open(os.path.join(tdir, 'target.json')))
