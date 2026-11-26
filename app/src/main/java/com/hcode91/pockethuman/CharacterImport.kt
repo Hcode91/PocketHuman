@@ -287,3 +287,43 @@ object AsIsExport {
         return p to mapOf(path to tex)
     }
 }
+
+
+/**
+ * "Use my model": an imported model used as the character itself, in place of the PocketHuman body.
+ * Saved in imported/my_models/<id>/ already lined up with the body's skeleton and skin-weighted to it.
+ */
+object ModelStore {
+    fun dir(filesDir: File, id: String) = File(filesDir, "imported/my_models/$id")
+
+    fun save(filesDir: File, id: String, name: String, part: Part, texture: ByteArray, textureExt: String) {
+        val d = dir(filesDir, id).apply { deleteRecursively(); mkdirs() }
+        val tex = "texture.$textureExt"; File(d, tex).writeBytes(texture)
+        val n = part.pos.size / 3
+        val bb = java.nio.ByteBuffer.allocate(8 + n * 12 + n * 12 + n * 8 + n * 16 + n * 16 + 4 + part.tris.size * 4).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        bb.put("PHM1".toByteArray()).putInt(n)
+        part.pos.forEach { bb.putFloat(it) }; part.nrm.forEach { bb.putFloat(it) }; part.uv.forEach { bb.putFloat(it) }
+        part.joints.forEach { bb.putInt(it) }; part.weights.forEach { bb.putFloat(it) }
+        bb.putInt(part.tris.size / 3); part.tris.forEach { bb.putInt(it) }
+        File(d, "mesh.bin").writeBytes(bb.array())
+        File(d, "model.json").writeText(JSONObject().put("name", name).put("texture", tex).toString())
+    }
+
+    fun list(filesDir: File): List<Pair<String, String>> =
+        File(filesDir, "imported/my_models").listFiles()?.filter { File(it, "model.json").exists() }?.sortedBy { it.lastModified() }
+            ?.map { it.name to JSONObject(File(it, "model.json").readText()).optString("name", it.name) } ?: emptyList()
+
+    fun name(filesDir: File, id: String): String? = runCatching { JSONObject(File(dir(filesDir, id), "model.json").readText()).getString("name") }.getOrNull()
+
+    fun load(filesDir: File, id: String): Part? = runCatching {
+        val d = dir(filesDir, id); val meta = JSONObject(File(d, "model.json").readText())
+        val bb = java.nio.ByteBuffer.wrap(File(d, "mesh.bin").readBytes()).order(java.nio.ByteOrder.LITTLE_ENDIAN); bb.position(4)
+        val n = bb.int
+        val pos = FloatArray(n * 3) { bb.float }; val nrm = FloatArray(n * 3) { bb.float }; val uv = FloatArray(n * 2) { bb.float }
+        val j = IntArray(n * 4) { bb.int }; val w = FloatArray(n * 4) { bb.float }
+        val nt = bb.int; val tris = IntArray(nt * 3) { bb.int }
+        Part("my_model", pos, nrm, uv, tris, "imported/my_models/$id/" + meta.getString("texture"), false, null, j, w, IntArray(0), FloatArray(0), 0)
+    }.getOrNull()
+
+    fun delete(filesDir: File, id: String) = dir(filesDir, id).deleteRecursively()
+}

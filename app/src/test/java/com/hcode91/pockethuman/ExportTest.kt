@@ -281,3 +281,51 @@ class CommunityTest {
         HumanModel.tintProvider = null
     }
 }
+
+class UrbanTest {
+    @Test fun converts() {
+        val src = File("/tmp/urban.glb"); if (!src.exists()) return
+        val tmp = java.nio.file.Files.createTempDirectory("phu").toFile()
+        val ct = CharacterTest()
+        val copy = TextureSink { s, dir, base, _ -> dir.mkdirs(); val n = base + "." + s.extension.lowercase(); s.copyTo(File(dir, n), true); n }
+        val writer = ImageWriter { a, w, h, dir, base -> dir.mkdirs(); File(dir, "$base.png").writeBytes(ct.png(a, w, h)); "$base.png" }
+        val srcOf = AssetSource { p -> if (p.startsWith("imported/")) File(tmp, p).readBytes() else File("src/main/assets/ph", p).readBytes() }
+        var lib = Library(srcOf, tmp); var m = HumanModel(lib); m.state.hair = null; m.rebuild()
+        var raw = MeshIO.load(src); if (raw.tris.size / 3 > 200000) raw = MeshIO.simplify(raw, 150000)
+        println("urban: ${raw.nv} verts ${raw.tris.size / 3} tris")
+        val rgb = File("/tmp/urban_tex.rgb").readBytes(); val S = 2048
+        val colors = ColorSampler { u, v -> val x = (u.coerceIn(0f, 0.9999f) * S).toInt(); val y = (v.coerceIn(0f, 0.9999f) * S).toInt(); val o = (y * S + x) * 3
+            ((rgb[o].toInt() and 0xff) shl 16) or ((rgb[o + 1].toInt() and 0xff) shl 8) or (rgb[o + 2].toInt() and 0xff) }
+        val d = OutfitDraft("u", "Urban", raw); d.autoPlace(BodyQuery(m))
+        // what the editor shows before converting
+        run { val f = d.computePreview(m, BodyQuery(m), colors)
+            val parts = PartBuilder.build(m, true, f.hiddenBody, setOf("my_u")).toMutableList()
+            File(System.getProperty("java.io.tmpdir"), "urban_editor.glb").outputStream().use { GlbExporter.write(m, it, parts) } }
+        val aligned = d.alignedOnly(m, BodyQuery(m))
+        // "Use this model": the model replaces the body
+        run { val (part, _) = AsIsExport.part(m, BodyQuery(m), d, aligned)
+            ModelStore.save(tmp, "mu", "Urban", part, raw.texture ?: OutfitDraft.GREY_PNG, raw.textureExt)
+            HumanModel.modelLoader = { id -> ModelStore.load(tmp, id) }
+            val mm = HumanModel(lib); mm.state.customModel = "mu"; mm.rebuild()
+            val parts = PartBuilder.build(mm, true); println("use-model parts: " + parts.map { it.name })
+            org.junit.Assert.assertEquals(listOf("my_model"), parts.map { it.name })
+            File(System.getProperty("java.io.tmpdir"), "urban_model.glb").outputStream().use { GlbExporter.write(mm, it) }
+            mm.state.customModel = null; org.junit.Assert.assertTrue(PartBuilder.build(mm, false).any { it.name == "body" })
+            HumanModel.modelLoader = null }
+        val skin = CharacterImport.skinMask(raw, colors); println("skin verts ${skin.count { it }} of ${raw.nv}")
+        val delta = CharacterImport.shapeDelta(m, aligned.pos, raw, skin) {}
+        var mx = 0f; for (x in delta) mx = maxOf(mx, Math.abs(x)); println("shape: max offset ${mx * 10} cm")
+        val sid = CharacterImport.saveShape(tmp, "Urban", delta)
+        var keep = m.state.toJson(); lib = Library(srcOf, tmp); m = HumanModel(lib); m.state.load(keep); m.state.details[sid] = 1f; m.rebuild()
+        val base = lib.skins[m.state.skin]
+        val baseRgb = ColorSampler { _, _ -> 0xC89078 }
+        val path = CharacterImport.projectSkin(m, aligned.pos, raw, skin, colors, baseRgb, 2048, tmp, "Urban", writer) {}
+        keep = m.state.toJson(); lib = Library(srcOf, tmp); m = HumanModel(lib); m.state.load(keep)
+        m.state.skin = lib.skins.indexOfFirst { it.texture == path }; m.state.autoSkin = false; m.rebuild()
+        val o = OutfitDraft("c1", "Urban outfit", raw, LinkedHashMap(d.p)).also { it.autoScale = d.autoScale; it.autoShift = d.autoShift.copyOf(); it.p["skinCut"] = 0.6f }
+        val b1 = BodyQuery(m); val fo = o.compute(m, b1, colors); o.bake(m, b1, fo, tmp, copy)
+        keep = m.state.toJson(); lib = Library(srcOf, tmp); m = HumanModel(lib); m.state.load(keep); m.state.clothes.add("my_c1"); m.rebuild()
+        File(System.getProperty("java.io.tmpdir"), "urban_char.glb").outputStream().use { GlbExporter.write(m, it) }
+        println("urban done")
+    }
+}

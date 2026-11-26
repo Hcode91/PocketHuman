@@ -25,6 +25,8 @@ class HumanState {
     var genitalDetail = 0
     /** tint anatomy pieces to the body's skin tone */
     var anatomyTint = true
+    /** an imported model used as the character instead of the PocketHuman body (id in imported/my_models), or null */
+    var customModel: String? = null
     val clothes = LinkedHashSet<String>()
     /** Expression shown in the app only; exports keep a neutral face plus every expression as a blend shape. */
     val expression = HashMap<String, Float>()
@@ -43,7 +45,7 @@ class HumanState {
         put("format", "pockethuman"); put("version", 1); put("name", name)
         put("macro", JSONObject(macro as Map<*, *>)); put("race", JSONObject(race as Map<*, *>)); put("details", JSONObject(details as Map<*, *>))
         put("skin", skin); put("eyeColour", eyeColour); put("eyebrows", eyebrows ?: ""); put("eyelashes", eyelashes ?: ""); put("hair", hair ?: "")
-        put("hairVariant", hairVariant); put("adult", adult); put("autoSkin", autoSkin); put("genitals", genitals); put("genitalDetail", genitalDetail); put("anatomyTint", anatomyTint)
+        put("hairVariant", hairVariant); put("adult", adult); put("autoSkin", autoSkin); put("genitals", genitals); put("genitalDetail", genitalDetail); put("anatomyTint", anatomyTint); put("customModel", customModel ?: JSONObject.NULL)
         put("clothes", org.json.JSONArray(clothes.toList()))
     }
     fun load(j: JSONObject) {
@@ -54,7 +56,7 @@ class HumanState {
         skin = j.optInt("skin", 0); eyeColour = j.optInt("eyeColour", 0); hairVariant = j.optInt("hairVariant", 0)
         eyebrows = j.optString("eyebrows").ifEmpty { null }; eyelashes = j.optString("eyelashes").ifEmpty { null }; hair = j.optString("hair").ifEmpty { null }
         name = j.optString("name", "Character")
-        adult = j.optBoolean("adult", false); autoSkin = j.optBoolean("autoSkin", true); genitals = j.optInt("genitals", 0); genitalDetail = j.optInt("genitalDetail", 0); anatomyTint = j.optBoolean("anatomyTint", true)
+        adult = j.optBoolean("adult", false); autoSkin = j.optBoolean("autoSkin", true); genitals = j.optInt("genitals", 0); genitalDetail = j.optInt("genitalDetail", 0); anatomyTint = j.optBoolean("anatomyTint", true); customModel = if (j.isNull("customModel")) null else j.optString("customModel").ifEmpty { null }
         clothes.clear(); j.optJSONArray("clothes")?.let { a -> for (i in 0 until a.length()) clothes.add(a.getString(i)) }
         expression.clear()
     }
@@ -71,6 +73,14 @@ class HumanModel(val lib: Library) {
         if (!want) return skin.texture
         return runCatching { detailProvider?.invoke(lib, skin.texture) }.getOrNull() ?: skin.texture
     }
+    /** The imported model when [HumanState.customModel] is set (loaded through [modelLoader], cached). */
+    private var loadedId: String? = null; private var loaded: Part? = null
+    val customPart: Part? get() {
+        val id = state.customModel ?: return null
+        if (id != loadedId) { loaded = runCatching { modelLoader?.invoke(id) }.getOrNull(); loadedId = id }
+        return loaded
+    }
+
     /** Texture for an anatomy piece: tinted to the skin unless the user turned that off. */
     fun anatomyTexture(tex: String, skin: Skin): String =
         if (!state.anatomyTint) tex else runCatching { tintProvider?.invoke(lib, tex, skin.texture) }.getOrNull() ?: tex
@@ -79,6 +89,8 @@ class HumanModel(val lib: Library) {
         /** Set by the app: makes/caches the skin copy with detail (needs image decoding, so it lives outside the model). */
         @Volatile var detailProvider: ((Library, String) -> String?)? = null
         /** Set by the app: (library, piece texture, skin texture) -> tinted copy of the piece texture. */
+        /** Set by the app: loads an imported model by id (see ModelStore). */
+        @Volatile var modelLoader: ((String) -> Part?)? = null
         @Volatile var tintProvider: ((Library, String, String) -> String?)? = null
     }
     /** Shape with the preview expression applied (what the app shows). */

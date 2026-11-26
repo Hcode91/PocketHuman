@@ -37,6 +37,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        HumanModel.modelLoader = { id -> ModelStore.load(filesDir, id) }
         HumanModel.tintProvider = { l, tex, skinTex -> synchronized(this) { GenitalDetail.tintedToSkin(l, tex, skinTex, filesDir, AndroidImageDecoder, AndroidImageWriter) } }
         HumanModel.detailProvider = { l, tex -> synchronized(this) { GenitalDetail.skinWithDetail(l, tex, filesDir, AndroidImageDecoder, AndroidImageWriter) } }
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -172,6 +173,27 @@ class MainActivity : Activity() {
         val s = model.state
         when (t) {
             "Body" -> {
+                s.customModel?.let { cm ->
+                    header("Using your imported model: ${ModelStore.name(filesDir, cm) ?: "model"}")
+                    content.addView(TextView(this).apply { setTextColor(dim); textSize = 13f; setPadding(0, 0, 0, dp(6))
+                        text = "It replaces the PocketHuman body, with a skeleton for posing and export (Save tab). Body sliders, skins and clothes don't apply to it." })
+                    button("Back to the PocketHuman body") { s.customModel = null; changed(); saveLast(); showTab("Body") }
+                }
+                val models = ModelStore.list(filesDir)
+                if (models.isNotEmpty()) {
+                    header("My imported models")
+                    for ((mid, mname) in models) {
+                        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                        val on = s.customModel == mid
+                        row.addView(TextView(this).apply { text = (if (on) "●  " else "○  ") + mname; textSize = 15f; setTextColor(if (on) accent else fg); setPadding(dp(4), dp(10), dp(4), dp(10))
+                            setOnClickListener { s.customModel = if (on) null else mid; changed(); saveLast(); showTab("Body") } }, LinearLayout.LayoutParams(0, -2, 1f))
+                        row.addView(TextView(this).apply { text = "Delete"; setTextColor(accent); textSize = 14f; setPadding(dp(12), dp(10), dp(12), dp(10))
+                            setOnClickListener { AlertDialog.Builder(this@MainActivity).setMessage("Delete $mname?").setPositiveButton("Delete") { _, _ ->
+                                if (s.customModel == mid) s.customModel = null; ModelStore.delete(filesDir, mid); changed(); saveLast(); showTab("Body") }.setNegativeButton("Cancel", null).show() } })
+                        content.addView(row)
+                    }
+                    header("Body")
+                }
                 button("New character (start again from the default body)") { AlertDialog.Builder(this).setMessage("Start a new character? Your current edits will be cleared. Save first in the Save tab if you want to keep them.")
                     .setPositiveButton("Start new") { _, _ -> model.state.load(HumanState().toJson()); model.state.skin = model.matchSkin(); changed(); saveLast(); showTab("Body") }.setNegativeButton("Cancel", null).show() }
                 button("Import a character from a 3D model (.glb / .obj)") { charMode = true; startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "*/*" }, REQ_OUTFIT) }
@@ -361,6 +383,8 @@ class MainActivity : Activity() {
     }
 
     private fun openEditor(d: OutfitDraft) {
+        // fitting always happens on the PocketHuman body, so step out of an imported model while editing
+        if (model.state.customModel != null) { model.state.customModel = null; model.rebuild() }
         draft = d; tabBar.visibility = View.GONE
         val wait = AlertDialog.Builder(this).setMessage("Preparing…").setCancelable(false).show()
         worker.execute {
@@ -519,12 +543,32 @@ class MainActivity : Activity() {
     private fun characterButtons(d: OutfitDraft) {
         content.addView(TextView(this).apply { setTextColor(dim); textSize = 12f; setPadding(0, dp(8), 0, dp(4))
             text = "Line the model up with the body underneath: turn and stand it up if needed, match the size and height, then the arm and leg angles until the body is hidden inside the model." })
-        button("Make it a PocketHuman character") { makeCharacter(d) }
+        button("Use this model as my character") { useModel(d) }
+        button("Rebuild as a PocketHuman body (sliders work)") { makeCharacter(d) }
         button("Export as-is, rigged (.glb)") { create(REQ_ASIS, "${safe(d.name)}_rigged.glb", "model/gltf-binary") }
         content.addView(TextView(this).apply { text = "Cancel"; setTextColor(dim); textSize = 15f; gravity = Gravity.CENTER; setPadding(0, dp(12), 0, dp(12)); setOnClickListener { closeEditor() } })
         content.addView(TextView(this).apply { setTextColor(dim); textSize = 12f
-            text = "'Make it a PocketHuman character' adds three things you can change later: a body-shape slider (Details → My shapes), a skin painted from the model (Skin tab) and the model's clothes and hair as an outfit (Clothes tab). " +
-                "'Export as-is' keeps the model exactly as it is and just adds the skeleton, so it can be animated, but its body can't be reshaped." })
+            text = "'Use this model' replaces the PocketHuman body with your model exactly as it is, with a skeleton added so it can be posed and exported. Body sliders, skins and clothes don't apply to it; you can switch back any time in the Body tab.\n\n" +
+                "'Rebuild as a PocketHuman body' keeps the app's body and reshapes it towards your model: a body-shape slider, a painted skin and the model's clothes as an outfit. It only works well when the model stands in an A-pose or T-pose.\n\n" +
+                "Either way the skeleton follows the body underneath, so line the arms and legs up with it. In other poses (an arm up at the head, say) the arms won't bend right when animated: ask Meshy for an A-pose version." })
+    }
+
+    private fun useModel(d: OutfitDraft) {
+        val dlg = AlertDialog.Builder(this).setMessage("Adding a skeleton to ${d.name}…").setCancelable(false).show()
+        worker.execute {
+            val r = runCatching {
+                val body = BodyQuery(model); val f = d.alignedOnly(model, body)
+                val (part, _) = AsIsExport.part(model, body, d, f)
+                val id = "m" + System.currentTimeMillis().toString(36)
+                ModelStore.save(filesDir, id, d.name, part, d.raw.texture ?: OutfitDraft.GREY_PNG, if (d.raw.texture != null) d.raw.textureExt else "png")
+                model.state.customModel = id; model.state.name = d.name; model.rebuild()
+            }
+            runOnUiThread {
+                dlg.dismiss()
+                r.onSuccess { closeEditor(); view3d.show(PartBuilder.build(model, false)); updateInfo(); saveLast(); showTab("Body"); toast("${d.name} is now your character") }
+                 .onFailure { AlertDialog.Builder(this).setTitle("Couldn't use the model").setMessage(it.message ?: it.toString()).setPositiveButton("OK", null).show() }
+            }
+        }
     }
 
     private fun makeCharacter(d: OutfitDraft) {

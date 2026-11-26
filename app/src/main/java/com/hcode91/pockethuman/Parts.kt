@@ -15,6 +15,8 @@ class Part(
 object PartBuilder {
     /** forExport: neutral face, skin weights, and the body under the clothes kept as its own part. */
     fun build(model: HumanModel, forExport: Boolean, extraHidden: BooleanArray? = null, skip: Set<String> = emptySet()): List<Part> {
+        // an imported model stands in for the whole character
+        if (model.state.customModel != null) model.customPart?.let { return listOf(it) }
         val lib = model.lib; val v = if (forExport) model.neutral else model.verts; val rig = lib.rig
         val out = ArrayList<Part>()
         val bm = lib.base
