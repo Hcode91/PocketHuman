@@ -102,13 +102,6 @@ class BodyQuery(model: HumanModel) {
  * Units: base-mesh units (decimetres), y up, facing +z.
  */
 class OutfitDraft(val id: String, var name: String, val raw: RawMesh, shared: LinkedHashMap<String, Float>? = null) {
-    private var lite: OutfitDraft? = null
-    /** Same outfit and settings on a lighter mesh, for live preview while editing. */
-    fun previewDraft(): OutfitDraft {
-        if (raw.tris.size / 3 <= 20000) return this
-        val l = lite ?: OutfitDraft(id, name, MeshIO.simplify(raw, 15000), p).also { lite = it }
-        l.autoScale = autoScale; l.autoShift = autoShift.copyOf(); l.strokes.clear(); l.strokes.addAll(strokes); return l
-    }
     val p: LinkedHashMap<String, Float> = shared ?: linkedMapOf(
         "turn" to 0f, "upright" to 0f,                 // fix orientation: turn (x90°), upright (x90° about x)
         "size" to 1f, "width" to 1f, "height" to 1f, "depth" to 1f,
@@ -206,9 +199,11 @@ class OutfitDraft(val id: String, var name: String, val raw: RawMesh, shared: Li
 
     private var adjCache: Array<IntArray>? = null
     private fun adjacency(): Array<IntArray> = adjCache ?: run {
-        val a = Array(raw.nv) { HashSet<Int>(8) }; var t = 0
-        while (t < raw.tris.size) { val x = raw.tris[t]; val y = raw.tris[t + 1]; val z = raw.tris[t + 2]; a[x].add(y); a[x].add(z); a[y].add(x); a[y].add(z); a[z].add(x); a[z].add(y); t += 3 }
-        Array(raw.nv) { a[it].toIntArray() }.also { adjCache = it }
+        val cnt = IntArray(raw.nv); raw.tris.forEach { cnt[it] += 2 }
+        val a = Array(raw.nv) { IntArray(cnt[it]) }; val fill = IntArray(raw.nv); var t = 0
+        while (t < raw.tris.size) { val v = intArrayOf(raw.tris[t], raw.tris[t + 1], raw.tris[t + 2])
+            for (q in 0..2) { val x = v[q]; a[x][fill[x]++] = v[(q + 1) % 3]; a[x][fill[x]++] = v[(q + 2) % 3] }; t += 3 }
+        a.also { adjCache = it }
     }
     private fun falloff(d: Float, r: Float): Float { if (d >= r) return 0f; val t = 1 - d / r; return t * t * (3 - 2 * t) }
 
@@ -261,21 +256,78 @@ class OutfitDraft(val id: String, var name: String, val raw: RawMesh, shared: Li
         return r
     }
 
-    class Fitted(val pos: FloatArray, val keepTris: IntArray, val hiddenBody: BooleanArray, val hits: Array<BodyQuery.Hit?>)
-
-    fun compute(model: HumanModel, body: BodyQuery, colors: ColorSampler?): Fitted {
+    /** Orientation, auto placement and the size/position sliders only. */
+    fun placed(body: BodyQuery): FloatArray {
         val o = oriented(); val n = raw.nv
         // centre for width/height/depth scaling = body centre
         val bodyB = bounds(body.v, 13380); val cx = (bodyB[0] + bodyB[3]) / 2; val cy = (bodyB[1] + bodyB[4]) / 2; val cz = (bodyB[2] + bodyB[5]) / 2
         val pos = FloatArray(n * 3)
-        val sz = p["size"]!!
+        val sz = p["size"]!!; val w = p["width"]!!; val h = p["height"]!!; val d = p["depth"]!!
         for (i in 0 until n) {
             val x = o[i * 3] * autoScale + autoShift[0]; val y = o[i * 3 + 1] * autoScale + autoShift[1]; val z = o[i * 3 + 2] * autoScale + autoShift[2]
             // size changes are made around the body's centre so the outfit stays on the body
-            pos[i * 3] = cx + (x - cx) * sz * p["width"]!! + p["side"]!!
-            pos[i * 3 + 1] = cy + (y - cy) * sz * p["height"]!! + p["up"]!!
-            pos[i * 3 + 2] = cz + (z - cz) * sz * p["depth"]!! + p["forward"]!!
+            pos[i * 3] = cx + (x - cx) * sz * w + p["side"]!!
+            pos[i * 3 + 1] = cy + (y - cy) * sz * h + p["up"]!!
+            pos[i * 3 + 2] = cz + (z - cz) * sz * d + p["forward"]!!
         }
+        return pos
+    }
+
+    // ---- fast preview: fit a welded low-poly cage (shape only, no UVs) and carry the result over to every vertex
+    private var cage: OutfitDraft? = null; private var cageMap: IntArray? = null; private var cageAdj: Array<IntArray>? = null
+    private fun buildCage() {
+        val m = raw; var lo = FloatArray(3) { Float.MAX_VALUE }; var hi = FloatArray(3) { -Float.MAX_VALUE }
+        for (i in 0 until m.nv) for (k in 0..2) { lo[k] = minOf(lo[k], m.pos[i * 3 + k]); hi[k] = maxOf(hi[k], m.pos[i * 3 + k]) }
+        val ext = maxOf(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]).coerceAtLeast(1e-6f)
+        var cells = 90; var map = IntArray(m.nv); var cent = FloatArray(0); var t = IntArray(0)
+        for (iter in 0 until 8) {
+            val cs = ext / cells; val key = HashMap<Long, Int>(); val sum = ArrayList<Float>(); val cnt = ArrayList<Int>()
+            for (i in 0 until m.nv) {
+                val k = key(Math.floor(((m.pos[i * 3] - lo[0]) / cs).toDouble()).toInt(), Math.floor(((m.pos[i * 3 + 1] - lo[1]) / cs).toDouble()).toInt(), Math.floor(((m.pos[i * 3 + 2] - lo[2]) / cs).toDouble()).toInt())
+                val c = key.getOrPut(k) { cnt.add(0); repeat(3) { sum.add(0f) }; cnt.size - 1 }
+                map[i] = c; cnt[c] = cnt[c] + 1; for (q in 0..2) sum[c * 3 + q] = sum[c * 3 + q] + m.pos[i * 3 + q]
+            }
+            cent = FloatArray(cnt.size * 3) { sum[it] / cnt[it / 3] }
+            if (cnt.size <= 12000 || cells <= 30) {
+                val tl = ArrayList<Int>(); var q = 0
+                while (q < m.tris.size) { val a = map[m.tris[q]]; val b = map[m.tris[q + 1]]; val c = map[m.tris[q + 2]]; if (a != b && b != c && a != c) { tl.add(a); tl.add(b); tl.add(c) }; q += 3 }
+                t = tl.toIntArray(); break
+            }
+            cells = (cells * 0.8f).toInt(); map = IntArray(m.nv)
+        }
+        val nc = cent.size / 3
+        val adj = Array(nc) { HashSet<Int>() }; var q = 0
+        while (q < t.size) { val a = t[q]; val b = t[q + 1]; val c = t[q + 2]; adj[a].add(b); adj[a].add(c); adj[b].add(a); adj[b].add(c); adj[c].add(a); adj[c].add(b); q += 3 }
+        cage = OutfitDraft(id, name, RawMesh(cent, FloatArray(nc * 2), t, null, "png"), p); cageMap = map; cageAdj = Array(nc) { adj[it].toIntArray() }
+    }
+
+    /** Same result as [compute] but quick on big meshes: used for the live preview. */
+    fun computePreview(model: HumanModel, body: BodyQuery, colors: ColorSampler?): Fitted {
+        if (raw.nv <= 30000) return compute(model, body, colors)
+        if (cage == null) buildCage()
+        val c = cage!!; val map = cageMap!!; val adj = cageAdj!!
+        c.autoScale = autoScale; c.autoShift = autoShift.copyOf(); c.strokes.clear(); c.strokes.addAll(strokes)
+        val keepP = HashMap(p); p["skinCut"] = 0f
+        val fc = try { c.compute(model, body, null) } finally { p.putAll(keepP) }
+        val cp = c.placed(body); val nc = cp.size / 3
+        var d = FloatArray(nc * 3) { fc.pos[it] - cp[it] }
+        // one smoothing pass so neighbouring clusters move together
+        d = FloatArray(nc * 3) { j -> val i = j / 3; val k = j % 3; val a = adj[i]; if (a.isEmpty()) d[j] else { var s = d[j]; for (x in a) s += d[x * 3 + k]; s / (a.size + 1) } }
+        val pos = placed(body); val n = raw.nv
+        for (i in 0 until n) { val ci = map[i]; for (k in 0..2) pos[i * 3 + k] += d[ci * 3 + k] }
+        val hits = Array(n) { fc.hits[map[it]] }
+        val cut = p["skinCut"]!!; val skinV = BooleanArray(n)
+        if (cut > 0f && colors != null) for (i in 0 until n) { val h = hits[i] ?: continue; if (h.dist > 0.3f + cut * 1.2f) continue; skinV[i] = isSkin(colors.rgb(raw.uv[i * 2], raw.uv[i * 2 + 1]), cut) }
+        val keep = ArrayList<Int>(raw.tris.size); var t = 0
+        while (t < raw.tris.size) { val a = raw.tris[t]; val b = raw.tris[t + 1]; val cc = raw.tris[t + 2]; if (!(skinV[a] && skinV[b] && skinV[cc])) { keep.add(a); keep.add(b); keep.add(cc) }; t += 3 }
+        return Fitted(pos, keep.toIntArray(), fc.hiddenBody, hits)
+    }
+
+    class Fitted(val pos: FloatArray, val keepTris: IntArray, val hiddenBody: BooleanArray, val hits: Array<BodyQuery.Hit?>)
+
+    fun compute(model: HumanModel, body: BodyQuery, colors: ColorSampler?): Fitted {
+        val n = raw.nv
+        val pos = placed(body)
         // pose fixes: turn arms/legs of the outfit about the body's shoulder/hip joints, weighted by the nearest body skin weights
         val rig = model.lib.rig; val heads = PartBuilder.jointHeads(model)
         fun boneIdx(n: String) = rig.bones.indexOfFirst { it.name == "mixamorig:$n" }
@@ -405,11 +457,12 @@ class OutfitDraft(val id: String, var name: String, val raw: RawMesh, shared: Li
         // scale references: the same body measurements MakeHuman clothes use, so the outfit grows with the body
         val sa = intArrayOf(5399, 791, 962); val sb = intArrayOf(11998, 881, 5320)
         val sref = FloatArray(3) { k -> Math.abs(body.v[sa[k] * 3 + k] - body.v[sb[k] * 3 + k]) }
-        val bb = ByteBuffer.allocate(8 + nU * 6 + nU * 24 + 36 + 4 + nU * 2 + nU * 8 + 4 + tris.size * 4).order(ByteOrder.LITTLE_ENDIAN)
-        bb.put("PHP1".toByteArray()).putInt(nU)
+        // PHP2: like PHP1 but the render map is 32-bit, for outfits with more than 65,535 vertices
+        val bb = ByteBuffer.allocate(8 + nU * 6 + nU * 24 + 36 + 4 + nU * 4 + nU * 8 + 4 + tris.size * 4).order(ByteOrder.LITTLE_ENDIAN)
+        bb.put("PHP2".toByteArray()).putInt(nU)
         refs.forEach { bb.putShort(it.toShort()) }; w.forEach { bb.putFloat(it) }; off.forEach { bb.putFloat(it) }
         sa.forEach { bb.putInt(it) }; sref.forEach { bb.putFloat(it) }; sb.forEach { bb.putInt(it) }
-        bb.putInt(nU); rmap.forEach { bb.putShort(it.toShort()) }; uv.forEach { bb.putFloat(it) }
+        bb.putInt(nU); rmap.forEach { bb.putInt(it) }; uv.forEach { bb.putFloat(it) }
         bb.putInt(tris.size / 3); tris.forEach { bb.putInt(it) }
         File(dir, "proxies/$id.bin").writeBytes(bb.array())
         // texture

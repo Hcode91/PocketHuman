@@ -323,8 +323,7 @@ class MainActivity : Activity() {
         worker.execute {
             draftDirty.set(false)
             val d = draft ?: return@execute; val body = draftBody ?: return@execute
-            val pd = d.previewDraft()
-            val f = pd.compute(model, body, draftColors)
+            val f = d.computePreview(model, body, draftColors); val pd = d
             val bodyParts = PartBuilder.build(model, false, f.hiddenBody, setOf("my_${d.id}"))
             runOnUiThread { prevPos = f.pos; prevTris = f.keepTris; prevUv = pd.raw.uv; prevBody = bodyParts; showLive(f.pos) }
         }
@@ -522,7 +521,7 @@ class MainActivity : Activity() {
         worker.execute {
             val r = runCatching {
                 var m = MeshIO.load(f, tex)
-                if (m.tris.size / 3 > 80000) m = MeshIO.simplify(m, 60000)
+                if (m.tris.size / 3 > 200000) m = MeshIO.simplify(m, 150000)
                 val d = OutfitDraft("o" + System.currentTimeMillis().toString(36), f.nameWithoutExtension.replace("Meshy_AI_", "").replace(Regex("_\\d{8}.*$"), "").replace('_', ' ').take(40), m)
                 val body = BodyQuery(model)
                 d.p["kind"] = pendingKind

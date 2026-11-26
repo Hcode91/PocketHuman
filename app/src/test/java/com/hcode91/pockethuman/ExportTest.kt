@@ -55,7 +55,7 @@ class OutfitTest {
         var lib = Library(srcOf, tmp)
         val m = HumanModel(lib); m.rebuild()
         var raw = MeshIO.load(src); println("loaded ${raw.nv} verts ${raw.tris.size / 3} tris tex ${raw.texture?.size}")
-        raw = MeshIO.simplify(raw, 60000); println("simplified to ${raw.tris.size / 3} tris")
+        raw = MeshIO.simplify(raw, 150000); println("simplified to ${raw.tris.size / 3} tris")
         val rgb = File("/tmp/tex1024.rgb").readBytes()
         val colors = ColorSampler { u, v -> val x = (u.coerceIn(0f, 0.9999f) * 1024).toInt(); val y = (v.coerceIn(0f, 0.9999f) * 1024).toInt(); val o = (y * 1024 + x) * 3
             ((rgb[o].toInt() and 0xff) shl 16) or ((rgb[o + 1].toInt() and 0xff) shl 8) or (rgb[o + 2].toInt() and 0xff) }
@@ -63,7 +63,7 @@ class OutfitTest {
         val body = BodyQuery(m)
         d.autoPlace(body); println("auto scale ${d.autoScale} shift ${d.autoShift.toList()}")
         d.p["skinCut"] = 0.6f
-        val tp = System.currentTimeMillis(); val pf = d.previewDraft().compute(m, body, colors); println("preview compute ms ${System.currentTimeMillis() - tp} (${pf.keepTris.size / 3} tris)")
+        val tp = System.currentTimeMillis(); val pf = d.computePreview(m, body, colors); println("preview compute ms ${System.currentTimeMillis() - tp} (${pf.keepTris.size / 3} tris)")
         val t0 = System.currentTimeMillis(); val f = d.compute(m, body, colors); println("compute ms ${System.currentTimeMillis() - t0}, kept tris ${f.keepTris.size / 3}, hidden body ${f.hiddenBody.count { it }}")
         var inside = 0; var checked = 0; var minD = 0f
         for (i in 0 until f.pos.size / 3) { val h = body.nearest(f.pos[i * 3], f.pos[i * 3 + 1], f.pos[i * 3 + 2]) ?: continue; if (h.dist > 1.5f) continue
@@ -142,12 +142,15 @@ class TankTopTest {
         val t0 = System.currentTimeMillis()
         var raw = MeshIO.load(src, File("/mnt/user-data/uploads/d015f3f7-image.webp"))
         println("tank top loaded ${raw.nv} verts ${raw.tris.size / 3} tris in ${System.currentTimeMillis() - t0} ms")
-        val t1 = System.currentTimeMillis(); raw = MeshIO.simplify(raw, 60000); println("simplified to ${raw.tris.size / 3} in ${System.currentTimeMillis() - t1} ms")
+        val t1 = System.currentTimeMillis(); raw = MeshIO.simplify(raw, 150000); println("simplified to ${raw.tris.size / 3} in ${System.currentTimeMillis() - t1} ms")
         val d = OutfitDraft("tank", "Tank top", raw); d.p["kind"] = 1f; val body = BodyQuery(m)
         val t2 = System.currentTimeMillis(); d.autoFit(body); println("auto-fit ${System.currentTimeMillis() - t2} ms scale ${d.autoScale} shift ${d.autoShift.toList()}")
         // a test brush stroke: shrinkwrap at the front
         d.strokes.add(OutfitDraft.Stroke(OutfitDraft.SHRINK, floatArrayOf(0f, 3f, 1.2f), 1.2f, FloatArray(3), 0.5f))
+        val tq = System.currentTimeMillis(); val pv = d.computePreview(m, body, null); val tq2 = System.currentTimeMillis()
         val f = d.compute(m, body, null)
+        run { var e = 0.0; var mx = 0f; for (i in f.pos.indices) { val x = Math.abs(f.pos[i] - pv.pos[i]); e += x; mx = maxOf(mx, x) }
+            println("preview ${tq2 - tq} ms, full ${System.currentTimeMillis() - tq2} ms; preview vs full mean ${"%.4f".format(e / f.pos.size)} dm, max $mx dm") }
         fun inside(pos: FloatArray, q: BodyQuery): Int { var c = 0; for (i in 0 until pos.size / 3) { val h = q.nearest(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]) ?: continue; if (h.dist > 1.5f) continue
             val nn = q.normalAt(h); if ((pos[i * 3] - h.x) * nn[0] + (pos[i * 3 + 1] - h.y) * nn[1] + (pos[i * 3 + 2] - h.z) * nn[2] < 0) c++ }; return c }
         println("tank inside after compute: ${inside(f.pos, body)} of ${f.pos.size / 3}")
@@ -157,5 +160,19 @@ class TankTopTest {
         println("tank inside after bake: ${inside(fp, BodyQuery(m2))} of ${fp.size / 3}")
         File(System.getProperty("java.io.tmpdir"), "ph_tank.glb").outputStream().use { GlbExporter.write(m2, it) }
         File(System.getProperty("java.io.tmpdir"), "ph_tank_only.glb").outputStream().use { GlbExporter.write(m2, it, PartBuilder.build(m2, true).filter { it.name.startsWith("my_") }) }
+    }
+}
+
+class SimplifyTest {
+    private fun area(m: RawMesh): Double { var a = 0.0; var t = 0; val p = m.pos
+        while (t < m.tris.size) { val i = m.tris[t] * 3; val j = m.tris[t + 1] * 3; val k = m.tris[t + 2] * 3
+            val ux = p[j] - p[i]; val uy = p[j + 1] - p[i + 1]; val uz = p[j + 2] - p[i + 2]; val vx = p[k] - p[i]; val vy = p[k + 1] - p[i + 1]; val vz = p[k + 2] - p[i + 2]
+            val cx = uy * vz - uz * vy; val cy = uz * vx - ux * vz; val cz = ux * vy - uy * vx; a += 0.5 * Math.sqrt((cx * cx + cy * cy + cz * cz).toDouble()); t += 3 }; return a }
+    @Test fun damage() {
+        for (f in listOf("/mnt/user-data/uploads/Meshy_AI_Black_Racerback_Tank_Top_20261026_texture.obj", "/home/claude/meshy_in/baked.glb")) {
+            val src = File(f); if (!src.exists()) continue
+            val raw = MeshIO.load(src, null); val a0 = area(raw)
+            for (t in listOf(150000, 60000, 15000)) { val s = MeshIO.simplify(raw, t); println("${src.name} ${raw.tris.size / 3} -> ${s.tris.size / 3}: area kept ${"%.2f".format(area(s) / a0)}") }
+        }
     }
 }

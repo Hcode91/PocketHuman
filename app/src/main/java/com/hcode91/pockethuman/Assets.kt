@@ -139,10 +139,11 @@ class ProxyMesh(am: AssetSource, val info: ProxyInfo) {
     val scaleA = IntArray(3); val scaleB = IntArray(3); val scaleRef = FloatArray(3)
     val renderMap: IntArray; val uv: FloatArray; val tris: IntArray
     init {
-        val r = Bin(am.bytes(info.file)); r.skip(4)
+        val bytes = am.bytes(info.file); val v2 = bytes[3] == '2'.code.toByte()
+        val r = Bin(bytes); r.skip(4)
         n = r.int(); refs = r.ushorts(n * 3); rw = r.floats(n * 3); ro = r.floats(n * 3)
         for (k in 0..2) scaleA[k] = r.int(); for (k in 0..2) scaleRef[k] = r.b.float; for (k in 0..2) scaleB[k] = r.int()
-        val nr = r.int(); renderMap = r.ushorts(nr); uv = r.floats(nr * 2)
+        val nr = r.int(); renderMap = if (v2) r.ints(nr) else r.ushorts(nr); uv = r.floats(nr * 2)
         val nt = r.int(); tris = r.ints(nt * 3)
     }
     /** Fit to the current (morphed) base vertices. */
