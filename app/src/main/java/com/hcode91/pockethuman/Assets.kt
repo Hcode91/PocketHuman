@@ -171,6 +171,9 @@ class Library(val am: AssetSource, importRoot: java.io.File? = null) {
     val genitals: Triple<IntArray, FloatArray, IntArray>? = runCatching {
         val r = Bin(am.bytes("genitals.bin")); r.skip(4); val n = r.int(); val m = r.ints(n); val uv = r.floats(n * 2); val nt = r.int(); Triple(m, uv, r.ints(nt * 3))
     }.getOrNull()
+    /** Animation clips (null if the asset is missing). */
+    val anims: AnimLibrary? by lazy { runCatching { AnimLibrary(am.bytes("anims.bin"), rig.bones.map { it.name }) }.getOrNull() }
+
     /** Body vertices around the crotch (near MakeHuman's genital piece), for "is it covered by clothes?" checks. */
     val crotchVerts: Set<Int> by lazy {
         val g = genitals ?: return@lazy emptySet<Int>(); val v = base.verts

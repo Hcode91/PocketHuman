@@ -52,6 +52,9 @@ class HumanView(ctx: Context, private var lib: Library) : GLSurfaceView(ctx) {
     }
     fun ndcDepth(w: FloatArray): Float { val o = FloatArray(4); Matrix.multiplyMV(o, 0, viewProj(), 0, floatArrayOf(w[0], w[1], w[2], 1f), 0); return o[2] / o[3] }
     fun show(parts: List<Part>) { queueEvent { r.pending = parts }; requestRender() }
+    /** bone matrices (52 x column-major 4x4) for skinning parts that carry joints; null = draw parts as they are */
+    @Volatile private var bones: FloatArray? = null
+    fun setBones(m: FloatArray?) { bones = m; requestRender() }
 
     private val scale = ScaleGestureDetector(ctx, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScale(d: ScaleGestureDetector): Boolean { dist = (dist / d.scaleFactor).coerceIn(4f, 80f); requestRender(); return true }
@@ -124,6 +127,9 @@ class HumanView(ctx: Context, private var lib: Library) : GLSurfaceView(ctx) {
                 glUniform1i(glGetUniformLocation(prog, "uTex"), 0)
                 glUniform1f(glGetUniformLocation(prog, "uCut"), if (g.part.alpha) 0.4f else -1f)
                 glUniform1f(glGetUniformLocation(prog, "uShine"), if (g.part.name.startsWith("eyes")) 1f else 0.15f)
+                val bm = bones; val skin = bm != null && g.part.joints.isNotEmpty()
+                glUniform1i(glGetUniformLocation(prog, "uSkin"), if (skin) 1 else 0)
+                if (skin) glUniformMatrix4fv(glGetUniformLocation(prog, "uB"), bm!!.size / 16, false, bm, 0)
                 glBindVertexArray(g.vao); glDrawElements(GL_TRIANGLES, g.nIdx, GL_UNSIGNED_INT, 0)
             }
             glBindVertexArray(0)
@@ -142,12 +148,14 @@ class HumanView(ctx: Context, private var lib: Library) : GLSurfaceView(ctx) {
             gpu.clear()
             for (p in parts) {
                 val vao = IntArray(1); glGenVertexArrays(1, vao, 0); glBindVertexArray(vao[0])
-                val b = IntArray(4); glGenBuffers(4, b, 0)
+                val b = IntArray(6); glGenBuffers(6, b, 0)
                 fun attr(i: Int, data: FloatArray, comps: Int) {
                     glBindBuffer(GL_ARRAY_BUFFER, b[i]); glBufferData(GL_ARRAY_BUFFER, data.size * 4, fb(data), GL_STATIC_DRAW)
                     glEnableVertexAttribArray(i); glVertexAttribPointer(i, comps, GL_FLOAT, false, 0, 0)
                 }
                 attr(0, p.pos, 3); attr(1, p.nrm, 3); attr(2, p.uv, 2)
+                if (p.joints.isNotEmpty()) { attr(4, FloatArray(p.joints.size) { p.joints[it].toFloat() }, 4); attr(5, p.weights, 4) }
+                else { glDisableVertexAttribArray(4); glDisableVertexAttribArray(5) }
                 glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, b[3]); glBufferData(GL_ELEMENT_ARRAY_BUFFER, p.tris.size * 4, ib(p.tris), GL_STATIC_DRAW)
                 gpu.add(Gpu(p, vao[0], b, p.tris.size))
             }
@@ -164,8 +172,12 @@ class HumanView(ctx: Context, private var lib: Library) : GLSurfaceView(ctx) {
         }
         const val VS = """#version 300 es
 layout(location=0) in vec3 aPos; layout(location=1) in vec3 aNrm; layout(location=2) in vec2 aUv;
-uniform mat4 uMvp; out vec3 vN; out vec2 vUv; out vec3 vP;
-void main(){ vN=aNrm; vUv=aUv; vP=aPos; gl_Position=uMvp*vec4(aPos,1.0); }"""
+layout(location=4) in vec4 aJ; layout(location=5) in vec4 aW;
+uniform mat4 uMvp; uniform mat4 uB[52]; uniform int uSkin; out vec3 vN; out vec2 vUv; out vec3 vP;
+void main(){
+  vec3 p=aPos; vec3 n=aNrm;
+  if(uSkin==1){ mat4 m=uB[int(aJ.x)]*aW.x+uB[int(aJ.y)]*aW.y+uB[int(aJ.z)]*aW.z+uB[int(aJ.w)]*aW.w; p=(m*vec4(aPos,1.0)).xyz; n=mat3(m)*aNrm; }
+  vN=n; vUv=aUv; vP=p; gl_Position=uMvp*vec4(p,1.0); }"""
         const val FS = """#version 300 es
 precision mediump float;
 in vec3 vN; in vec2 vUv; in vec3 vP; uniform sampler2D uTex; uniform float uCut; uniform float uShine; uniform vec3 uEye; out vec4 o;

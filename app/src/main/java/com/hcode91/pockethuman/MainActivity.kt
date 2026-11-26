@@ -108,7 +108,7 @@ class MainActivity : Activity() {
     }
 
     // ------------------------------------------------------------------ tabs
-    private val tabs = listOf("Body", "Ethnicity", "Details", "Face", "Skin", "Eyes", "Hair", "Clothes", "Packs", "Save")
+    private val tabs = listOf("Body", "Ethnicity", "Details", "Face", "Skin", "Eyes", "Hair", "Clothes", "Animations", "Packs", "Save")
     private fun buildTabs() {
         tabBar.removeAllViews()
         for (t in tabs) tabBar.addView(chip(t, t == tab) { tab = t; buildTabs(); showTab(t) })
@@ -170,8 +170,10 @@ class MainActivity : Activity() {
 
     private fun showTab(t: String) {
         content.removeAllViews()
+        if (t != "Animations" && playing != null) stopClip()
         val s = model.state
         when (t) {
+            "Animations" -> animationsTab()
             "Body" -> {
                 s.customModel?.let { cm ->
                     header("Using your imported model: ${ModelStore.name(filesDir, cm) ?: "model"}")
@@ -360,7 +362,7 @@ class MainActivity : Activity() {
         }
         content.addView(TextView(this).apply {
             setTextColor(dim); textSize = 12f; setPadding(0, dp(16), 0, 0)
-            text = "The .glb has a Mixamo-named skeleton (A-pose), skin weights, eyes, brows, lashes, teeth and hair, ready for the Pose Studio, Blender or Godot.\n\n" +
+            text = "The .glb has a Mixamo-named skeleton (A-pose), skin weights, eyes, brows, lashes, teeth, hair and each clothing item as its own object, plus the animations ticked in the Animations tab (${model.state.anims.size} now). Ready for three.js, Godot, Unity or Blender.\n\n" +
                 "Body, morphs, skins, eyes and hair come from the MakeHuman / MPFB2 community and are CC0, so anything you make is yours to use, including commercially."
         })
     }
@@ -791,6 +793,72 @@ class MainActivity : Activity() {
             val i = lib.skins.indexOfFirst { it.texture == skinTex }; if (i >= 0) model.state.skin = i else { model.state.autoSkin = true; model.state.skin = model.matchSkin() }
             model.rebuild(); val parts = PartBuilder.build(model, false)
             runOnUiThread { view3d.reload(lib); view3d.show(parts); updateInfo(); saveLast(); communityScreen() }
+        }
+    }
+
+    // ------------------------------------------------------------------ animations
+    private var playing: String? = null
+    private val ticker = android.os.Handler(android.os.Looper.getMainLooper())
+    private var tickRun: Runnable? = null
+
+    private fun playClip(name: String) {
+        val al = lib.anims ?: return; val c = al.clip(name) ?: return
+        stopTicker(); playing = name
+        worker.execute {
+            val parts = PartBuilder.build(model, true)
+            val heads = PartBuilder.jointHeads(model).toList()
+            var floor = Float.MAX_VALUE; for (i in 0 until 13380) floor = minOf(floor, model.neutral[i * 3 + 1])
+            val parents = IntArray(lib.rig.bones.size) { lib.rig.bones[it].parent }
+            val posed = al.fit(c, heads, parents, floor)
+            runOnUiThread {
+                if (playing != name) return@runOnUiThread
+                view3d.show(parts)
+                val mats = FloatArray(heads.size * 16); val start = System.nanoTime()
+                val r = object : Runnable { override fun run() {
+                    if (playing != name) return
+                    val t = (System.nanoTime() - start) / 1e9f
+                    // one-shot clips play, hold for half a second, then repeat
+                    val span = if (c.loops) c.duration else c.duration + 0.5f
+                    val f = ((t % span.coerceAtLeast(0.05f)) * c.fps).toInt().coerceIn(0, posed.frames - 1)
+                    AnimLibrary.skinMatrices(posed, f, heads, mats); view3d.setBones(mats.copyOf())
+                    ticker.postDelayed(this, 33)
+                } }
+                tickRun = r; ticker.post(r)
+            }
+        }
+        if (tab == "Animations") showTab("Animations")
+    }
+    private fun stopTicker() { tickRun?.let { ticker.removeCallbacks(it) }; tickRun = null }
+    private fun stopClip() {
+        stopTicker(); playing = null; view3d.setBones(null)
+        worker.execute { val parts = PartBuilder.build(model, false); runOnUiThread { if (playing == null) view3d.show(parts) } }
+    }
+
+    private fun animationsTab() {
+        val s = model.state; val al = lib.anims
+        if (al == null) { content.addView(TextView(this).apply { setTextColor(fg); text = "No animations found in this build." }); return }
+        content.addView(TextView(this).apply { setTextColor(dim); textSize = 12f; setPadding(0, dp(8), 0, dp(4))
+            text = "Tap a name to play it on your character. Tick the ones to include when you export the .glb (Save tab). " +
+                "Animations: Universal Animation Library 1 and 2 by Quaternius (CC0: free to use, no credit needed)." })
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        row.addView(chip("Stop", playing == null) { stopClip(); showTab("Animations") })
+        row.addView(chip("Basics only", false) { s.anims.clear(); s.anims.addAll(DEFAULT_ANIMS); saveLast(); showTab("Animations") })
+        row.addView(chip("All", false) { s.anims.clear(); s.anims.addAll(al.clips.map { it.name }); saveLast(); showTab("Animations") })
+        row.addView(chip("None", false) { s.anims.clear(); saveLast(); showTab("Animations") })
+        content.addView(HorizontalScrollView(this).apply { addView(row) })
+        header("${s.anims.count { n -> al.clip(n) != null }} selected for export")
+        for ((set, title) in listOf(1 to "Moving, actions and everyday", 2 to "Combat, parkour, farming and more")) {
+            header(title)
+            for (c in al.clips.filter { it.set == set }.sortedBy { it.label }) {
+                val line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                val on = c.name in s.anims
+                line.addView(TextView(this).apply { text = if (on) "☑" else "☐"; textSize = 20f; setTextColor(if (on) accent else dim); setPadding(dp(4), dp(6), dp(12), dp(6))
+                    setOnClickListener { if (!s.anims.remove(c.name)) s.anims.add(c.name); saveLast(); showTab("Animations") } })
+                line.addView(TextView(this).apply { text = (if (playing == c.name) "▶  " else "") + c.label + "   " + "%.1fs".format(c.duration); textSize = 15f
+                    setTextColor(if (playing == c.name) accent else fg); setPadding(0, dp(8), dp(4), dp(8))
+                    setOnClickListener { playClip(c.name) } }, LinearLayout.LayoutParams(0, -2, 1f))
+                content.addView(line)
+            }
         }
     }
 

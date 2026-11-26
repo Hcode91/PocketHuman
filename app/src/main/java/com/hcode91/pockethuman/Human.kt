@@ -3,6 +3,9 @@ package com.hcode91.pockethuman
 import org.json.JSONObject
 
 /** Everything the user has chosen. Ages are adult only (25 to 90). */
+/** clips exported by default: the basics for a playable character */
+val DEFAULT_ANIMS = listOf("Idle_Loop", "Walk_Loop", "Jog_Fwd_Loop", "Sprint_Loop", "Jump_Start", "Jump_Loop", "Jump_Land", "Crouch_Idle_Loop", "Crouch_Fwd_Loop", "Roll", "Interact", "Hit_Chest", "Death01")
+
 class HumanState {
     val macro = linkedMapOf(
         "gender" to 0f, "age" to 0.5f, "muscle" to 0.5f, "weight" to 0.5f,
@@ -27,6 +30,8 @@ class HumanState {
     var anatomyTint = true
     /** an imported model used as the character instead of the PocketHuman body (id in imported/my_models), or null */
     var customModel: String? = null
+    /** animation clips to include in the export */
+    val anims = ArrayList(DEFAULT_ANIMS)
     val clothes = LinkedHashSet<String>()
     /** Expression shown in the app only; exports keep a neutral face plus every expression as a blend shape. */
     val expression = HashMap<String, Float>()
@@ -45,7 +50,7 @@ class HumanState {
         put("format", "pockethuman"); put("version", 1); put("name", name)
         put("macro", JSONObject(macro as Map<*, *>)); put("race", JSONObject(race as Map<*, *>)); put("details", JSONObject(details as Map<*, *>))
         put("skin", skin); put("eyeColour", eyeColour); put("eyebrows", eyebrows ?: ""); put("eyelashes", eyelashes ?: ""); put("hair", hair ?: "")
-        put("hairVariant", hairVariant); put("adult", adult); put("autoSkin", autoSkin); put("genitals", genitals); put("genitalDetail", genitalDetail); put("anatomyTint", anatomyTint); put("customModel", customModel ?: JSONObject.NULL)
+        put("hairVariant", hairVariant); put("adult", adult); put("autoSkin", autoSkin); put("genitals", genitals); put("genitalDetail", genitalDetail); put("anatomyTint", anatomyTint); put("customModel", customModel ?: JSONObject.NULL); put("anims", org.json.JSONArray(anims))
         put("clothes", org.json.JSONArray(clothes.toList()))
     }
     fun load(j: JSONObject) {
@@ -57,6 +62,7 @@ class HumanState {
         eyebrows = j.optString("eyebrows").ifEmpty { null }; eyelashes = j.optString("eyelashes").ifEmpty { null }; hair = j.optString("hair").ifEmpty { null }
         name = j.optString("name", "Character")
         adult = j.optBoolean("adult", false); autoSkin = j.optBoolean("autoSkin", true); genitals = j.optInt("genitals", 0); genitalDetail = j.optInt("genitalDetail", 0); anatomyTint = j.optBoolean("anatomyTint", true); customModel = if (j.isNull("customModel")) null else j.optString("customModel").ifEmpty { null }
+        anims.clear(); j.optJSONArray("anims")?.let { a -> for (i in 0 until a.length()) anims.add(a.getString(i)) } ?: anims.addAll(DEFAULT_ANIMS)
         clothes.clear(); j.optJSONArray("clothes")?.let { a -> for (i in 0 until a.length()) clothes.add(a.getString(i)) }
         expression.clear()
     }

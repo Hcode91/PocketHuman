@@ -15,7 +15,7 @@ object GlbExporter {
     private const val SCALE = 0.1f
 
     /** only: export these parts instead of the character (e.g. an imported model rigged as-is); extraTex: texture bytes by path */
-    fun write(model: HumanModel, out: OutputStream, only: List<Part>? = null, extraTex: Map<String, ByteArray> = emptyMap()) {
+    fun write(model: HumanModel, out: OutputStream, only: List<Part>? = null, extraTex: Map<String, ByteArray> = emptyMap(), anims: List<String> = model.state.anims) {
         val parts = only ?: PartBuilder.build(model, true)
         // feet on the ground: lowest body vertex at y = 0
         var floor = Float.MAX_VALUE
@@ -117,6 +117,37 @@ object GlbExporter {
         for (i in bones.indices) { val o = i * 16; ibm[o] = 1f; ibm[o + 5] = 1f; ibm[o + 10] = 1f; ibm[o + 15] = 1f
             ibm[o + 12] = -heads[i][0]; ibm[o + 13] = -heads[i][1]; ibm[o + 14] = -heads[i][2] }
         val skin = JSONObject().put("joints", JSONArray((j0 until j0 + bones.size).toList())).put("inverseBindMatrices", accF(ibm, 16, "MAT4", null)).put("skeleton", j0)
+        // animation clips, fitted to this body
+        val animations = JSONArray()
+        val alib = model.lib.anims
+        if (alib != null) {
+            val parents = IntArray(bones.size) { bones[it].parent }
+            for (name in anims) {
+                val c = alib.clip(name) ?: continue
+                val p = alib.fit(c, heads, parents, 0f)
+                val nb = bones.size
+                val times = FloatArray(p.frames) { it / c.fps }
+                val tAcc = accF(times, 1, "SCALAR", null, minmax = true)
+                val chans = JSONArray(); val samps = JSONArray()
+                for (r in 0 until nb) {
+                    val q = FloatArray(p.frames * 4)
+                    for (f in 0 until p.frames) {
+                        val w = FloatArray(4) { p.rot[(f * nb + r) * 4 + it] }
+                        val par = parents[r]
+                        val l = if (par < 0) w else AnimLibrary.qmul(AnimLibrary.qinv(FloatArray(4) { p.rot[(f * nb + par) * 4 + it] }), w)
+                        val ln = AnimLibrary.qnorm(l); System.arraycopy(ln, 0, q, f * 4, 4)
+                    }
+                    samps.put(JSONObject().put("input", tAcc).put("output", accF(q, 4, "VEC4", null)).put("interpolation", "LINEAR"))
+                    chans.put(JSONObject().put("sampler", samps.length() - 1).put("target", JSONObject().put("node", j0 + r).put("path", "rotation")))
+                    if (parents[r] < 0) {
+                        val t = FloatArray(p.frames * 3) { p.pos[((it / 3) * nb + r) * 3 + it % 3] }
+                        samps.put(JSONObject().put("input", tAcc).put("output", accF(t, 3, "VEC3", null)).put("interpolation", "LINEAR"))
+                        chans.put(JSONObject().put("sampler", samps.length() - 1).put("target", JSONObject().put("node", j0 + r).put("path", "translation")))
+                    }
+                }
+                animations.put(JSONObject().put("name", name).put("channels", chans).put("samplers", samps))
+            }
+        }
         val rootChildren = JSONArray((0 until j0).toList()).put(j0)
         nodes.put(JSONObject().put("name", model.state.name.ifBlank { "Character" }).put("children", rootChildren))
         align()
@@ -129,6 +160,7 @@ object GlbExporter {
             .put("nodes", nodes).put("meshes", meshes).put("materials", materials).put("textures", textures).put("images", images)
             .put("samplers", JSONArray().put(JSONObject().put("magFilter", 9729).put("minFilter", 9987)))
             .put("skins", JSONArray().put(skin)).put("accessors", accs).put("bufferViews", views)
+            .also { if (animations.length() > 0) it.put("animations", animations) }
             .put("buffers", JSONArray().put(JSONObject().put("byteLength", bin.size())))
         var js = gltf.toString().toByteArray()
         if (js.size % 4 != 0) js += ByteArray(4 - js.size % 4) { ' '.code.toByte() }

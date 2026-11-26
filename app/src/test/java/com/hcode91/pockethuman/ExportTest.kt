@@ -329,3 +329,16 @@ class UrbanTest {
         println("urban done")
     }
 }
+
+class AnimTest {
+    @Test fun exportsClips() {
+        val tmp = java.nio.file.Files.createTempDirectory("pha").toFile()
+        val lib = Library(AssetSource { p -> File("src/main/assets/ph", p).readBytes() }, tmp)
+        println("clips: ${lib.anims!!.clips.size}; first: ${lib.anims!!.clips.take(5).map { it.label }}")
+        val m = HumanModel(lib); m.state.macro["gender"] = 0f; m.state.clothes.add("clothes_female_casualsuit01"); m.rebuild()
+        m.state.anims.clear(); m.state.anims.addAll(listOf("Idle_Loop", "Walk_Loop", "Jog_Fwd_Loop", "Sword_Attack", "Sword_Regular_Combo", "A_missing"))
+        val t0 = System.currentTimeMillis()
+        File(System.getProperty("java.io.tmpdir"), "ph_anim.glb").outputStream().use { GlbExporter.write(m, it) }
+        println("anim export ${System.currentTimeMillis() - t0} ms, ${File(System.getProperty("java.io.tmpdir"), "ph_anim.glb").length() / 1024} KB")
+    }
+}
