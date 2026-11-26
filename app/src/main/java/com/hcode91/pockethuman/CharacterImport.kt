@@ -167,6 +167,27 @@ object CharacterImport {
         return cur
     }
 
+    /** Characters made by "Import a character": one per saved body shape. Pairs of (shape slider id, name). */
+    fun characters(filesDir: File): List<Pair<String, String>> {
+        val mf = File(filesDir, "imported/my_shapes/manifest.json"); if (!mf.exists()) return emptyList()
+        val sl = JSONObject(mf.readText()).getJSONArray("groups").getJSONObject(0).getJSONArray("sliders")
+        return (0 until sl.length()).map { sl.getJSONObject(it).let { o -> o.getString("id") to o.getString("label") } }
+    }
+
+    /** Removes a character's body shape and painted skin(s). The outfit is removed separately. */
+    fun deleteCharacter(filesDir: File, shapeId: String, name: String) {
+        val sd = File(filesDir, "imported/my_shapes"); val mf = File(sd, "manifest.json")
+        if (mf.exists()) { val m = JSONObject(mf.readText()); val g = m.getJSONArray("groups").getJSONObject(0); val old = g.getJSONArray("sliders"); val nw = JSONArray()
+            for (i in 0 until old.length()) if (old.getJSONObject(i).getString("id") != shapeId) nw.put(old.getJSONObject(i))
+            g.put("sliders", nw); mf.writeText(m.toString())
+            val ij = File(sd, "targets.json"); if (ij.exists()) { val idx = JSONObject(ij.readText()); idx.remove(shapeId); ij.writeText(idx.toString()) } }
+        val kd = File(filesDir, "imported/my_skins"); val kf = File(kd, "manifest.json")
+        if (kf.exists()) { val m = JSONObject(kf.readText()); val old = m.getJSONArray("skins"); val nw = JSONArray()
+            for (i in 0 until old.length()) { val o = old.getJSONObject(i)
+                if (o.getString("name") == name) File(filesDir, o.getString("texture")).delete() else nw.put(o) }
+            m.put("skins", nw); kf.writeText(m.toString()) }
+    }
+
     /** Saves a body-shape offset field as a slider in the "My shapes" pack. Returns the slider id. */
     fun saveShape(filesDir: File, name: String, delta: FloatArray): String {
         val dir = File(filesDir, "imported/my_shapes").apply { mkdirs() }

@@ -70,6 +70,24 @@ class MainActivity : Activity() {
         runOnUiThread { view3d.reload(lib); view3d.show(parts); updateInfo(); done() }
     }
 
+    private fun deleteCharacter(shapeId: String, cname: String) {
+        val s = model.state; val skinBefore = lib.skins.getOrNull(s.skin)?.texture
+        val outfits = lib.proxies.filter { it.id.startsWith("my_") && it.label == "$cname outfit" }.map { it.id }
+        worker.execute {
+            CharacterImport.deleteCharacter(filesDir, shapeId, cname)
+            outfits.forEach { OutfitDraft.delete(filesDir, it.removePrefix("my_")) }
+            s.details.remove(shapeId); outfits.forEach { s.clothes.remove(it) }
+            if (s.name == cname) s.name = "Character"
+            val keep = s.toJson()
+            lib = makeLibrary(); model = HumanModel(lib); model.state.load(keep)
+            val idx = lib.skins.indexOfFirst { it.texture == skinBefore }
+            if (idx >= 0) model.state.skin = idx else { model.state.autoSkin = true; model.state.skin = model.matchSkin() }
+            model.rebuild()
+            val parts = PartBuilder.build(model, false)
+            runOnUiThread { view3d.reload(lib); view3d.show(parts); updateInfo(); saveLast(); showTab("Body"); toast("$cname deleted") }
+        }
+    }
+
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
     // ------------------------------------------------------------------ model updates
@@ -152,7 +170,23 @@ class MainActivity : Activity() {
         val s = model.state
         when (t) {
             "Body" -> {
+                button("New character (start again from the default body)") { AlertDialog.Builder(this).setMessage("Start a new character? Your current edits will be cleared. Save first in the Save tab if you want to keep them.")
+                    .setPositiveButton("Start new") { _, _ -> model.state.load(HumanState().toJson()); model.state.skin = model.matchSkin(); changed(); saveLast(); showTab("Body") }.setNegativeButton("Cancel", null).show() }
                 button("Import a character from a 3D model (.glb / .obj)") { charMode = true; startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "*/*" }, REQ_OUTFIT) }
+                val chars = CharacterImport.characters(filesDir)
+                if (chars.isNotEmpty()) {
+                    header("My imported characters")
+                    for ((shapeId, cname) in chars) {
+                        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                        val on = (s.details[shapeId] ?: 0f) > 0f
+                        row.addView(TextView(this).apply { text = (if (on) "●  " else "○  ") + cname; textSize = 15f; setTextColor(if (on) accent else fg); setPadding(dp(4), dp(10), dp(4), dp(10)) }, LinearLayout.LayoutParams(0, -2, 1f))
+                        row.addView(TextView(this).apply { text = "Delete"; setTextColor(accent); textSize = 14f; setPadding(dp(12), dp(10), dp(12), dp(10))
+                            setOnClickListener { AlertDialog.Builder(this@MainActivity).setMessage("Delete $cname? This removes its body shape, skin and clothes.")
+                                .setPositiveButton("Delete") { _, _ -> deleteCharacter(shapeId, cname) }.setNegativeButton("Cancel", null).show() } })
+                        content.addView(row)
+                    }
+                    header("Body")
+                }
                 switch("Adult anatomy (genital shapes and skins)", s.adult) { s.adult = it; if (!it && lib.skins[s.skin].adult) s.skin = model.matchSkin() }
                 slider("Gender", s.macro["gender"]!!, 0f, 1f, { if (it < 0.15f) "female" else if (it > 0.85f) "male" else pct(it) }) { s.macro["gender"] = it; changed() }
                 slider("Age", s.macro["age"]!!, 0.5f, 1f, { "${(25 + (it - 0.5f) * 130).toInt()} years" }) { s.macro["age"] = it; changed() }
@@ -224,7 +258,7 @@ class MainActivity : Activity() {
                             setOnClickListener { if (!s.clothes.remove(p.id)) s.clothes.add(p.id); showTab(tab); changed(); saveLast() } }, LinearLayout.LayoutParams(0, -2, 1f))
                         row.addView(TextView(this).apply { text = "Edit"; setTextColor(accent); textSize = 14f; setPadding(dp(10), dp(10), dp(10), dp(10))
                             setOnClickListener { worker.execute { val d = OutfitDraft.loadSaved(filesDir, p.id.removePrefix("my_")); runOnUiThread { if (d != null) openEditor(d) else toast("Couldn't open that outfit") } } } })
-                        row.addView(TextView(this).apply { text = "Delete"; setTextColor(dim); textSize = 14f; setPadding(dp(10), dp(10), dp(10), dp(10))
+                        row.addView(TextView(this).apply { text = "Delete"; setTextColor(accent); textSize = 14f; setPadding(dp(10), dp(10), dp(10), dp(10))
                             setOnClickListener { AlertDialog.Builder(this@MainActivity).setMessage("Delete ${p.label}?").setPositiveButton("Delete") { _, _ ->
                                 OutfitDraft.delete(filesDir, p.id.removePrefix("my_")); s.clothes.remove(p.id); reloadLibrary { showTab("Clothes") } }.setNegativeButton("Cancel", null).show() } })
                         content.addView(row)

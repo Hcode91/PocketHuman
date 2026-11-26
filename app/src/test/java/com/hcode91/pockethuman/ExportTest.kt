@@ -176,3 +176,18 @@ class SimplifyTest {
         }
     }
 }
+
+class DeleteCharacterTest {
+    @Test fun deletes() {
+        val tmp = java.nio.file.Files.createTempDirectory("phd").toFile()
+        val srcOf = AssetSource { p -> if (p.startsWith("imported/")) File(tmp, p).readBytes() else File("src/main/assets/ph", p).readBytes() }
+        var m = HumanModel(Library(srcOf, tmp)); m.rebuild()
+        val d = FloatArray(m.lib.base.nV * 3); d[1] = 0.1f
+        val a = CharacterImport.saveShape(tmp, "Ann", d); val b = CharacterImport.saveShape(tmp, "Bea", d)
+        println("chars ${CharacterImport.characters(tmp)}")
+        CharacterImport.deleteCharacter(tmp, a, "Ann")
+        val left = CharacterImport.characters(tmp); println("after delete $left")
+        org.junit.Assert.assertEquals(listOf(b to "Bea"), left)
+        m = HumanModel(Library(srcOf, tmp)); m.state.details[b] = 1f; m.rebuild()   // remaining shape still loads
+    }
+}
