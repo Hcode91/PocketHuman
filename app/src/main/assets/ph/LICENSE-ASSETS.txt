@@ -1,0 +1,2 @@
+All assets in this folder come from MakeHuman / MPFB2 and the MakeHuman community asset packs
+(makehuman_system_assets, skins01) and are released under CC0 1.0. https://creativecommons.org/publicdomain/zero/1.0/
