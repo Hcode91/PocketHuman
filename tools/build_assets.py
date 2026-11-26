@@ -13,6 +13,7 @@ import numpy as np
 from PIL import Image
 
 MPFB, SYS, SKINS01, OUT = sys.argv[1:5]
+FACEUNITS = sys.argv[5] if len(sys.argv) > 5 else None   # faceunits01 pack (ARKit-style), CC0
 DATA = os.path.join(MPFB, 'src', 'mpfb', 'data')
 os.makedirs(OUT, exist_ok=True)
 def out(*p): return os.path.join(OUT, *p)
@@ -70,7 +71,7 @@ mirror = [int(l.split()[1]) for l in open(os.path.join(DATA, 'mesh_metadata', 'h
 # ---------------------------------------------------------------- targets
 def read_target(path):
     idx, d = [], []
-    with gzip.open(path, 'rt') as fh:
+    with (gzip.open(path, 'rt') if path.endswith('.gz') else open(path)) as fh:
         for line in fh:
             p = line.split()
             if len(p) == 4 and not line.startswith('#'):
@@ -81,22 +82,31 @@ index = {}; blob = io.BytesIO()
 skipped = 0
 for path in sorted(glob.glob(os.path.join(tdir, '**', '*.target.gz'), recursive=True)):
     name = os.path.relpath(path, tdir)[:-len('.target.gz')]
-    if not adult_ok(name) or name.startswith('genitals/') or name.startswith('expression/'):
+    if not adult_ok(name):
         skipped += 1; continue
     idx, d = read_target(path)
     nz = np.abs(d).max(1) > 1e-5 if len(d) else np.zeros(0, bool)
     idx, d = idx[nz], d[nz]
     index[name] = [blob.tell(), len(idx)]
     blob.write(idx.astype('<u2').tobytes()); blob.write(d.astype('<f2').tobytes())
+arkit = []
+if FACEUNITS:
+    for path in sorted(glob.glob(os.path.join(FACEUNITS, 'targets', 'faceunits', '*.target'))):
+        nm = os.path.basename(path)[:-len('.target')]
+        idx, d = read_target(path)
+        nz = np.abs(d).max(1) > 1e-5 if len(d) else np.zeros(0, bool)
+        idx, d = idx[nz], d[nz]
+        index['faceunits/' + nm] = [blob.tell(), len(idx)]; arkit.append(nm)
+        blob.write(idx.astype('<u2').tobytes()); blob.write(d.astype('<f2').tobytes())
+    print('ARKit face units', len(arkit))
 open(out('targets.bin'), 'wb').write(blob.getvalue())
 json.dump(index, open(out('targets.json'), 'w'), separators=(',', ':'))
-print('targets', len(index), 'skipped (child/baby/genital/expression)', skipped, 'bytes', blob.tell())
+print('targets', len(index), 'skipped (child/baby)', skipped, 'bytes', blob.tell())
 
 # ---------------------------------------------------------------- sliders
 tj = json.load(open(os.path.join(tdir, 'target.json')))
 groups_out = []; missing = []
 for gname, gdef in tj.items():
-    if gname in ('genitals',): continue
     sliders = []
     for c in gdef['categories']:
         o = c.get('opposites') or {'negative-left': '', 'negative-right': '', 'negative-unsided': '', 'positive-left': '', 'positive-right': '', 'positive-unsided': ''}
@@ -113,9 +123,10 @@ for gname, gdef in tj.items():
         if not neg and not pos: missing.append(c['name']); continue
         label = c.get('label', c['name']).replace('measure-', '').replace('-decr-incr', '').replace('-', ' ')
         sliders.append({'id': gname + '/' + c['name'], 'label': label, 'neg': neg, 'pos': pos})
-    if sliders: groups_out.append({'group': gname, 'sliders': sliders})
+    if sliders: groups_out.append({'group': gname, 'sliders': sliders, 'adult': gname == 'genitals'})
 macro = json.load(open(os.path.join(tdir, 'macrodetails', 'macro.json')))
-json.dump({'groups': groups_out, 'macro': macro}, open(out('sliders.json'), 'w'), separators=(',', ':'))
+units = sorted({n.split('/')[-1] for n in index if n.startswith('expression/units/')})
+json.dump({'groups': groups_out, 'macro': macro, 'expressions': units, 'arkit': arkit}, open(out('sliders.json'), 'w'), separators=(',', ':'))
 print('missing sliders', len(missing), missing[:8]); print('slider groups', len(groups_out), 'sliders', sum(len(g['sliders']) for g in groups_out))
 
 # ---------------------------------------------------------------- rig (Mixamo names)
@@ -163,7 +174,7 @@ def save_tex(src, dst_name, size, alpha):
 
 # ---------------------------------------------------------------- proxies
 def read_mhclo(path):
-    info = {'verts': [], 'scale': {}, 'delete': [], 'obj': None, 'material': None, 'name': None}
+    info = {'verts': [], 'scale': {}, 'delete': [], 'obj': None, 'material': None, 'name': None, 'zdepth': 50}
     status = ''
     for line in open(path, encoding='utf-8', errors='ignore'):
         w = line.split()
@@ -189,6 +200,7 @@ def read_mhclo(path):
         if k == 'obj_file': info['obj'] = w[1]
         elif k == 'material': info['material'] = w[1]
         elif k == 'name': info['name'] = w[1]
+        elif k == 'z_depth': info['zdepth'] = int(w[1])
         elif k in ('x_scale', 'y_scale', 'z_scale'): info['scale'][k[0]] = [int(w[1]), int(w[2]), float(w[3])]
         elif k == 'verts': status = 'v'
         if status == 'v' and k != 'verts': pass
@@ -223,32 +235,54 @@ def add_proxy(kind, folder, mhclo_name=None, mats=None):
         if not os.path.exists(tp): continue
         vname = os.path.splitext(os.path.basename(mp))[0]
         fname, alpha = save_tex(tp, 'proxies/' + pid + '_' + vname, 512 if kind in ('eyes', 'eyebrows', 'eyelashes', 'teeth', 'tongue') else 1024, True)
-        variants.append({'name': vname.replace('_', ' '), 'texture': fname, 'alpha': alpha})
+        v = {'name': vname.replace('_', ' '), 'texture': fname, 'alpha': alpha}
+        nt = m.get('normalmapTexture')
+        if nt and os.path.exists(os.path.normpath(os.path.join(os.path.dirname(mp), nt))):
+            v['normal'], _ = save_tex(os.path.normpath(os.path.join(os.path.dirname(mp), nt)), 'proxies/' + pid + '_' + vname + '_normal', 1024, False)
+        variants.append(v)
     proxies.append({'id': pid, 'kind': kind, 'label': os.path.basename(folder).replace('_', ' '), 'file': 'proxies/' + pid + '.bin',
-                    'delete': sorted(set(info['delete'])), 'variants': variants})
+                    'delete': sorted(set(info['delete'])), 'variants': variants, 'zdepth': info['zdepth']})
 os.makedirs(out('proxies'), exist_ok=True)
 add_proxy('eyes', os.path.join(SYS, 'eyes', 'high-poly'), 'high-poly.mhclo', sorted(glob.glob(os.path.join(SYS, 'eyes', 'materials', '*.mhmat'))))
-for kind in ('eyebrows', 'eyelashes', 'teeth', 'tongue', 'hair'):
+for kind in ('eyebrows', 'eyelashes', 'teeth', 'tongue', 'hair', 'clothes'):
     for d in sorted(glob.glob(os.path.join(SYS, kind, '*/'))):
         if kind == 'teeth' and 'base' not in d: continue
         add_proxy(kind, d)
 json.dump(proxies, open(out('proxies.json'), 'w'), separators=(',', ':'))
-print('proxies', {k: sum(p['kind'] == k for p in proxies) for k in ('eyes', 'eyebrows', 'eyelashes', 'teeth', 'tongue', 'hair')})
+print('proxies', {k: sum(p['kind'] == k for p in proxies) for k in ('eyes', 'eyebrows', 'eyelashes', 'teeth', 'tongue', 'hair', 'clothes')})
 
 # ---------------------------------------------------------------- skins
 skins = []
 os.makedirs(out('skins'), exist_ok=True)
+from scipy.ndimage import gaussian_filter, sobel
+def detail_normal(src, dst_name, size=1024, strength=2.5):
+    """Skin packs have no normal maps: make a gentle one from the colour texture's fine detail (pores, creases)."""
+    im = np.asarray(Image.open(src).convert('L').resize((size, size), Image.LANCZOS), np.float32) / 255.
+    h = im - gaussian_filter(im, 6)
+    nx = -sobel(h, 1) * strength; ny = -sobel(h, 0) * strength
+    n = np.stack([nx, -ny, np.ones_like(nx)], -1); n /= np.linalg.norm(n, axis=-1, keepdims=True)
+    Image.fromarray(((n * 0.5 + 0.5) * 255).astype(np.uint8)).save(out(dst_name + '.jpg'), quality=90)
+    return dst_name + '.jpg'
+def tags(nm):
+    t = {}
+    for r, keys in (('african', ('african',)), ('asian', ('asian', 'indian', 'eurasian')), ('caucasian', ('caucasian', 'light', 'ginger', 'red_head', 'creamy'))):
+        if any(k in nm for k in keys): t['race'] = r; break
+    t['gender'] = 'male' if re.search(r'(^|_)male', nm) else 'female'
+    t['age'] = 'old' if 'old' in nm else 'middleage' if 'middle' in nm else 'young'
+    return t
 cands = sorted(glob.glob(os.path.join(SYS, 'skins', '*', '*.mhmat'))) + sorted(glob.glob(os.path.join(SKINS01, 'skins', '*', '*.mhmat')))
 for mp in cands:
     nm = os.path.splitext(os.path.basename(mp))[0]
-    if 'genital' in nm or not adult_ok(nm) or 'young' in nm and ('child' in nm): continue
+    if not adult_ok(nm): continue
     m = read_mhmat(mp); tex = m.get('diffuseTexture')
     if not tex: continue
     tp = os.path.normpath(os.path.join(os.path.dirname(mp), tex))
     if not os.path.exists(tp): continue
     fname, _ = save_tex(tp, 'skins/' + nm, 2048, False)
-    skins.append({'name': nm.replace('_', ' '), 'texture': fname})
+    entry = {'name': nm.replace('_', ' '), 'texture': fname, 'normal': detail_normal(tp, 'skins/' + nm + '_normal'),
+             'adult': 'genital' in nm, 'system': SYS in mp, **tags(nm)}
+    skins.append(entry)
 json.dump(skins, open(out('skins.json'), 'w'), separators=(',', ':'))
 print('skins', len(skins))
 open(out('LICENSE-ASSETS.txt'), 'w').write('All assets in this folder come from MakeHuman / MPFB2 and the MakeHuman community asset packs\n'
-    '(makehuman_system_assets, skins01) and are released under CC0 1.0. https://creativecommons.org/publicdomain/zero/1.0/\n')
+    '(makehuman_system_assets, skins01, faceunits01) and are released under CC0 1.0. https://creativecommons.org/publicdomain/zero/1.0/\n')

@@ -67,12 +67,14 @@ class Targets(am: AssetSource) {
 }
 
 class Slider(val id: String, val label: String, val neg: List<String>, val pos: List<String>)
-class SliderGroup(val name: String, val sliders: List<Slider>)
+class SliderGroup(val name: String, val sliders: List<Slider>, val adult: Boolean)
 class MacroPart(val lowest: Float, val highest: Float, val low: String, val high: String)
 
 class SliderDefs(am: AssetSource) {
     val groups = ArrayList<SliderGroup>()
     val macro = HashMap<String, List<MacroPart>>()
+    val expressions = ArrayList<String>()
+    val arkit = ArrayList<String>()
     init {
         val j = JSONObject(am.json("sliders.json"))
         val g = j.getJSONArray("groups")
@@ -81,8 +83,10 @@ class SliderDefs(am: AssetSource) {
             groups.add(SliderGroup(o.getString("group"), (0 until s.length()).map {
                 val x = s.getJSONObject(it)
                 Slider(x.getString("id"), x.getString("label"), strs(x.getJSONArray("neg")), strs(x.getJSONArray("pos")))
-            }))
+            }, o.optBoolean("adult", false)))
         }
+        j.optJSONArray("expressions")?.let { e -> for (i in 0 until e.length()) expressions.add(e.getString(i)) }
+        j.optJSONArray("arkit")?.let { e -> for (i in 0 until e.length()) arkit.add(e.getString(i)) }
         val m = j.getJSONObject("macro").getJSONObject("macrotargets")
         for (k in m.keys()) {
             val parts = m.getJSONObject(k).getJSONArray("parts")
@@ -112,8 +116,9 @@ class Rig(am: AssetSource, nV: Int) {
     }
 }
 
-class ProxyVariant(val name: String, val texture: String, val alpha: Boolean)
-class ProxyInfo(val id: String, val kind: String, val label: String, val file: String, val delete: IntArray, val variants: List<ProxyVariant>)
+class ProxyVariant(val name: String, val texture: String, val alpha: Boolean, val normal: String?)
+class ProxyInfo(val id: String, val kind: String, val label: String, val file: String, val delete: IntArray, val variants: List<ProxyVariant>, val zdepth: Int)
+class Skin(val name: String, val texture: String, val normal: String?, val adult: Boolean, val system: Boolean, val race: String?, val gender: String, val age: String)
 
 /** A proxy mesh (eyes, hair...) and how each of its vertices hangs off the base mesh. */
 class ProxyMesh(am: AssetSource, val info: ProxyInfo) {
@@ -146,18 +151,40 @@ class Library(val am: AssetSource) {
     val defs = SliderDefs(am)
     val rig = Rig(am, base.nV)
     val proxies: List<ProxyInfo>
-    val skins: List<Pair<String, String>>
+    val skins: List<Skin>
     private val meshCache = HashMap<String, ProxyMesh>()
     init {
         val p = JSONArray(am.json("proxies.json"))
         proxies = (0 until p.length()).map {
             val o = p.getJSONObject(it); val v = o.getJSONArray("variants"); val d = o.getJSONArray("delete")
             ProxyInfo(o.getString("id"), o.getString("kind"), o.getString("label"), o.getString("file"), IntArray(d.length()) { i -> d.getInt(i) },
-                (0 until v.length()).map { i -> val x = v.getJSONObject(i); ProxyVariant(x.getString("name"), x.getString("texture"), x.getBoolean("alpha")) })
+                (0 until v.length()).map { i -> val x = v.getJSONObject(i); ProxyVariant(x.getString("name"), x.getString("texture"), x.getBoolean("alpha"), x.optString("normal").ifEmpty { null }) },
+                o.optInt("zdepth", 50))
         }
         val s = JSONArray(am.json("skins.json"))
-        skins = (0 until s.length()).map { val o = s.getJSONObject(it); o.getString("name") to o.getString("texture") }
+        skins = (0 until s.length()).map { val o = s.getJSONObject(it)
+            Skin(o.getString("name"), o.getString("texture"), o.optString("normal").ifEmpty { null }, o.optBoolean("adult"), o.optBoolean("system"),
+                o.optString("race").ifEmpty { null }, o.optString("gender", "female"), o.optString("age", "young")) }
     }
     fun proxy(id: String) = meshCache.getOrPut(id) { ProxyMesh(am, proxies.first { it.id == id }) }
     fun ofKind(kind: String) = proxies.filter { it.kind == kind }
+
+    /** All face shapes: MakeHuman units ("mh:mouth-open") and ARKit face units ("arkit:jawOpen"). */
+    fun faceShapes(): List<String> = defs.expressions.map { "mh:$it" } + defs.arkit.map { "arkit:$it" }
+
+    /** (target, weight) pairs making up one face shape; MakeHuman units blend the three ethnic variants. */
+    fun faceShapeTargets(key: String, race: Map<String, Float>): List<Pair<String, Float>> =
+        if (key.startsWith("arkit:")) listOf("faceunits/" + key.removePrefix("arkit:") to 1f)
+        else race.map { (r, w) -> "expression/units/$r/${key.removePrefix("mh:")}" to w }
+
+    /** A face shape as a dense offset field over the base vertices. */
+    fun faceShapeDelta(key: String, race: Map<String, Float>): FloatArray {
+        val d = FloatArray(base.nV * 3)
+        for ((t, w) in faceShapeTargets(key, race)) {
+            if (w < 1e-4f) continue
+            val (idx, off) = targets.get(t) ?: continue
+            for (i in idx.indices) for (k in 0..2) d[idx[i] * 3 + k] += w * off[i * 3 + k]
+        }
+        return d
+    }
 }

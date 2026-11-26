@@ -17,6 +17,11 @@ class HumanState {
     var hair: String? = "hair_ponytail01"
     var hairVariant = 0
     var name = "Character"
+    var adult = false
+    var autoSkin = true
+    val clothes = LinkedHashSet<String>()
+    /** Expression shown in the app only; exports keep a neutral face plus every expression as a blend shape. */
+    val expression = HashMap<String, Float>()
 
     fun setRace(key: String, value: Float) {
         // keep the three mixing weights summing to 1, sharing the change between the other two
@@ -32,7 +37,8 @@ class HumanState {
         put("format", "pockethuman"); put("version", 1); put("name", name)
         put("macro", JSONObject(macro as Map<*, *>)); put("race", JSONObject(race as Map<*, *>)); put("details", JSONObject(details as Map<*, *>))
         put("skin", skin); put("eyeColour", eyeColour); put("eyebrows", eyebrows ?: ""); put("eyelashes", eyelashes ?: ""); put("hair", hair ?: "")
-        put("hairVariant", hairVariant)
+        put("hairVariant", hairVariant); put("adult", adult); put("autoSkin", autoSkin)
+        put("clothes", org.json.JSONArray(clothes.toList()))
     }
     fun load(j: JSONObject) {
         j.optJSONObject("macro")?.let { m -> for (k in macro.keys) if (m.has(k)) macro[k] = m.getDouble(k).toFloat() }
@@ -42,13 +48,19 @@ class HumanState {
         skin = j.optInt("skin", 0); eyeColour = j.optInt("eyeColour", 0); hairVariant = j.optInt("hairVariant", 0)
         eyebrows = j.optString("eyebrows").ifEmpty { null }; eyelashes = j.optString("eyelashes").ifEmpty { null }; hair = j.optString("hair").ifEmpty { null }
         name = j.optString("name", "Character")
+        adult = j.optBoolean("adult", false); autoSkin = j.optBoolean("autoSkin", true)
+        clothes.clear(); j.optJSONArray("clothes")?.let { a -> for (i in 0 until a.length()) clothes.add(a.getString(i)) }
+        expression.clear()
     }
 }
 
 /** Turns a HumanState into vertex positions: base + weighted morph targets. */
 class HumanModel(val lib: Library) {
     val state = HumanState()
+    /** Shape with the preview expression applied (what the app shows). */
     var verts = lib.base.verts.copyOf()
+    /** Same shape with a neutral face (what gets exported). */
+    var neutral = verts
 
     private fun components(name: String, value: Float): List<Pair<String, Float>> {
         val out = ArrayList<Pair<String, Float>>()
@@ -92,11 +104,27 @@ class HumanModel(val lib: Library) {
             for (i in idx.indices) { val o = idx[i] * 3; v[o] += w * d[i * 3]; v[o + 1] += w * d[i * 3 + 1]; v[o + 2] += w * d[i * 3 + 2] }
         }
         for ((n, w) in macroStack()) if (w > 0.01f) apply(n, w)
-        for (g in lib.defs.groups) for (s in g.sliders) {
-            val x = state.details[s.id] ?: continue
-            if (x > 0) s.pos.forEach { apply(it, x) } else if (x < 0) s.neg.forEach { apply(it, -x) }
+        for (g in lib.defs.groups) {
+            if (g.adult && !state.adult) continue
+            for (s in g.sliders) {
+                val x = state.details[s.id] ?: continue
+                if (x > 0) s.pos.forEach { apply(it, x) } else if (x < 0) s.neg.forEach { apply(it, -x) }
+            }
         }
+        neutral = v.copyOf()
+        for ((key, w) in state.expression) if (w > 0.001f) for ((t, tw) in lib.faceShapeTargets(key, state.race)) apply(t, w * tw)
         verts = v
+        if (state.autoSkin) state.skin = matchSkin()
+    }
+
+    /** Closest built-in skin for the current ethnicity mix, gender and age. */
+    fun matchSkin(): Int {
+        val race = state.race.maxByOrNull { it.value }!!.key
+        val gender = if (state.macro["gender"]!! < 0.5f) "female" else "male"
+        val y = ageYears(); val age = if (y < 42) "young" else if (y < 62) "middleage" else "old"
+        val sk = lib.skins
+        fun score(s: Skin) = (if (s.system) 4 else 0) + (if (s.race == race) 4 else 0) + (if (s.gender == gender) 3 else 0) + (if (s.age == age) 2 else 0) - (if (s.adult) 10 else 0)
+        return sk.indices.maxByOrNull { score(sk[it]) } ?: 0
     }
 
     fun proxyIds(): List<Pair<String, Int>> {
@@ -106,6 +134,7 @@ class HumanModel(val lib: Library) {
         state.eyelashes?.let { out.add(it to 0) }
         out.add("teeth_teeth_base" to 0); out.add("tongue_tongue01" to 0)
         state.hair?.let { out.add(it to state.hairVariant) }
+        lib.proxies.filter { it.kind == "clothes" && it.id in state.clothes }.sortedBy { it.zdepth }.forEach { out.add(it.id to 0) }
         return out.filter { p -> lib.proxies.any { it.id == p.first } }
     }
 

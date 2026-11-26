@@ -77,7 +77,7 @@ class MainActivity : Activity() {
     }
 
     // ------------------------------------------------------------------ tabs
-    private val tabs = listOf("Body", "Ethnicity", "Details", "Skin", "Eyes", "Hair", "Save")
+    private val tabs = listOf("Body", "Ethnicity", "Details", "Face", "Skin", "Eyes", "Hair", "Clothes", "Save")
     private fun buildTabs() {
         tabBar.removeAllViews()
         for (t in tabs) tabBar.addView(chip(t, t == tab) { tab = t; buildTabs(); showTab(t) })
@@ -116,11 +116,33 @@ class MainActivity : Activity() {
         })
     }
 
+    private fun switch(label: String, on: Boolean, change: (Boolean) -> Unit) = content.addView(Switch(this).apply {
+        text = label; isChecked = on; setTextColor(fg); textSize = 14f; setPadding(0, dp(8), 0, dp(8))
+        setOnCheckedChangeListener { _, c -> change(c); changed(); saveLast(); showTab(tab) }
+    })
+
+    private fun toggleOption(label: String, on: Boolean, click: () -> Unit) {
+        content.addView(TextView(this).apply {
+            text = (if (on) "☑  " else "☐  ") + label; textSize = 15f; setTextColor(if (on) accent else fg); setPadding(dp(4), dp(10), dp(4), dp(10))
+            setOnClickListener { click(); showTab(tab); changed(); saveLast() }
+        })
+    }
+
+    private val presets = linkedMapOf(
+        "Neutral" to mapOf(),
+        "Smile" to mapOf("mh:mouth-corner-puller" to 0.8f, "mh:eye-left-slit" to 0.25f, "mh:eye-right-slit" to 0.25f),
+        "Surprised" to mapOf("mh:eyebrows-left-up" to 1f, "mh:eyebrows-right-up" to 1f, "mh:eye-left-opened-up" to 0.7f, "mh:eye-right-opened-up" to 0.7f, "mh:mouth-open" to 0.6f),
+        "Angry" to mapOf("mh:eyebrows-left-down" to 1f, "mh:eyebrows-right-down" to 1f, "mh:nose-compression" to 0.4f, "mh:mouth-compression" to 0.6f),
+        "Sad" to mapOf("mh:eyebrows-left-inner-up" to 1f, "mh:eyebrows-right-inner-up" to 1f, "mh:mouth-depression" to 0.8f),
+        "Blink" to mapOf("mh:eye-left-closure" to 1f, "mh:eye-right-closure" to 1f)
+    )
+
     private fun showTab(t: String) {
         content.removeAllViews()
         val s = model.state
         when (t) {
             "Body" -> {
+                switch("Adult anatomy (genital shapes and skins)", s.adult) { s.adult = it; if (!it && lib.skins[s.skin].adult) s.skin = model.matchSkin() }
                 slider("Gender", s.macro["gender"]!!, 0f, 1f, { if (it < 0.15f) "female" else if (it > 0.85f) "male" else pct(it) }) { s.macro["gender"] = it; changed() }
                 slider("Age", s.macro["age"]!!, 0.5f, 1f, { "${(25 + (it - 0.5f) * 130).toInt()} years" }) { s.macro["age"] = it; changed() }
                 slider("Muscle", s.macro["muscle"]!!, 0f, 1f, ::pct) { s.macro["muscle"] = it; changed() }
@@ -139,9 +161,10 @@ class MainActivity : Activity() {
             }
             "Details" -> {
                 val chips = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-                for (g in lib.defs.groups) chips.addView(chip(g.name, g.name == detailGroup) { detailGroup = g.name; showTab("Details") })
+                val groups = lib.defs.groups.filter { !it.adult || s.adult }
+                for (g in groups) chips.addView(chip(g.name, g.name == detailGroup) { detailGroup = g.name; showTab("Details") })
                 content.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(chips) })
-                val g = lib.defs.groups.firstOrNull { it.name == detailGroup } ?: lib.defs.groups.first()
+                val g = groups.firstOrNull { it.name == detailGroup } ?: groups.first()
                 content.addView(TextView(this).apply {
                     text = "Reset ${g.name}"; setTextColor(accent); textSize = 13f; setPadding(0, dp(10), 0, dp(4))
                     setOnClickListener { g.sliders.forEach { s.details.remove(it.id) }; showTab("Details"); changed(); saveLast() }
@@ -153,7 +176,24 @@ class MainActivity : Activity() {
                     }
                 }
             }
-            "Skin" -> lib.skins.forEachIndexed { i, sk -> option(sk.first, s.skin == i) { s.skin = i } }
+            "Skin" -> {
+                switch("Match skin to ethnicity, gender and age", s.autoSkin) { s.autoSkin = it }
+                lib.skins.forEachIndexed { i, sk -> if (!sk.adult || s.adult) option(sk.name, s.skin == i) { s.skin = i; s.autoSkin = false } }
+            }
+            "Face" -> {
+                header("Preview an expression (exports keep a neutral face, with every shape included as a blend shape)")
+                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                for ((name, set) in presets) row.addView(chip(name, false) { s.expression.clear(); s.expression.putAll(set); changed(); showTab("Face") })
+                content.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(row) })
+                header("MakeHuman face units")
+                for (u in lib.defs.expressions) slider(u.replace('-', ' '), s.expression["mh:$u"] ?: 0f, 0f, 1f, ::pct) { x -> if (x < 0.01f) s.expression.remove("mh:$u") else s.expression["mh:$u"] = x; changed() }
+                header("ARKit face units")
+                for (u in lib.defs.arkit) slider(u, s.expression["arkit:$u"] ?: 0f, 0f, 1f, ::pct) { x -> if (x < 0.01f) s.expression.remove("arkit:$u") else s.expression["arkit:$u"] = x; changed() }
+            }
+            "Clothes" -> {
+                header("Tap to put on or take off. Body under clothes is hidden, and kept as its own part in the export.")
+                for (p in lib.ofKind("clothes")) toggleOption(p.label, p.id in s.clothes) { if (!s.clothes.remove(p.id)) s.clothes.add(p.id) }
+            }
             "Eyes" -> {
                 val eyes = lib.proxies.firstOrNull { it.kind == "eyes" }
                 eyes?.variants?.forEachIndexed { i, v -> option(v.name, s.eyeColour == i) { s.eyeColour = i } }
@@ -211,7 +251,7 @@ class MainActivity : Activity() {
         s.details.clear()
         for (g in lib.defs.groups) if (g.name in setOf("nose", "mouth", "eyes", "chin", "cheek", "forehead", "eyebrows", "ears"))
             for (sl in g.sliders.shuffled(r).take(3)) s.details[sl.id] = (r.nextFloat() - 0.5f) * (if (sl.neg.isEmpty()) 0.6f else 0.8f)
-        s.skin = r.nextInt(lib.skins.size)
+        s.skin = model.matchSkin(); s.autoSkin = true
         lib.proxies.firstOrNull { it.kind == "eyes" }?.let { s.eyeColour = r.nextInt(it.variants.size.coerceAtLeast(1)) }
         val hairs = lib.ofKind("hair"); s.hair = hairs[r.nextInt(hairs.size)].id
         val brows = lib.ofKind("eyebrows"); s.eyebrows = brows[r.nextInt(brows.size)].id

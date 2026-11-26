@@ -16,7 +16,10 @@ object GlbExporter {
 
     fun write(model: HumanModel, out: OutputStream) {
         val parts = PartBuilder.build(model, true)
-        val heads = PartBuilder.jointHeads(model).map { h -> FloatArray(3) { h[it] * SCALE } }
+        // feet on the ground: lowest body vertex at y = 0
+        var floor = Float.MAX_VALUE
+        for (i in 0 until 13380) floor = minOf(floor, model.neutral[i * 3 + 1])
+        val heads = PartBuilder.jointHeads(model).map { h -> FloatArray(3) { (h[it] - if (it == 1) floor else 0f) * SCALE } }
         val bones = model.lib.rig.bones
         val bin = ByteArrayOutputStream()
         val views = JSONArray(); val accs = JSONArray()
@@ -47,21 +50,57 @@ object GlbExporter {
         }
         val images = JSONArray(); val textures = JSONArray(); val materials = JSONArray(); val meshes = JSONArray(); val nodes = JSONArray()
         val texIndex = HashMap<String, Int>()
-        for (p in parts) {
-            val ti = texIndex.getOrPut(p.texture) {
-                val data = model.lib.am.bytes(p.texture)
-                images.put(JSONObject().put("bufferView", view(data, null)).put("mimeType", if (p.texture.endsWith(".png")) "image/png" else "image/jpeg"))
-                textures.put(JSONObject().put("source", images.length() - 1).put("sampler", 0)); textures.length() - 1
+        fun tex(path: String) = texIndex.getOrPut(path) {
+            val data = model.lib.am.bytes(path)
+            images.put(JSONObject().put("bufferView", view(data, null)).put("mimeType", if (path.endsWith(".png")) "image/png" else "image/jpeg"))
+            textures.put(JSONObject().put("source", images.length() - 1).put("sampler", 0)); textures.length() - 1
+        }
+        // every face shape (MakeHuman units + ARKit units) as an offset field over the base mesh, in metres
+        val shapeKeys = model.lib.faceShapes()
+        val shapeDeltas = shapeKeys.map { k -> model.lib.faceShapeDelta(k, model.state.race).also { d -> for (i in d.indices) d[i] *= SCALE } }
+        fun sparseTarget(d: FloatArray): Int {
+            val idx = ArrayList<Int>()
+            for (i in 0 until d.size / 3) if (Math.abs(d[i * 3]) + Math.abs(d[i * 3 + 1]) + Math.abs(d[i * 3 + 2]) > 1e-7f) idx.add(i)
+            // an all-zero shape still gets one explicit zero entry: some loaders (three.js) reject accessors with no data
+            if (idx.isEmpty()) idx.add(0)
+            val acc = JSONObject().put("componentType", 5126).put("count", d.size / 3).put("type", "VEC3")
+            run {
+                val ib = le(idx.size * 4); idx.forEach { ib.putInt(it) }
+                val vb = le(idx.size * 12); idx.forEach { vb.putFloat(d[it * 3]); vb.putFloat(d[it * 3 + 1]); vb.putFloat(d[it * 3 + 2]) }
+                acc.put("sparse", JSONObject().put("count", idx.size)
+                    .put("indices", JSONObject().put("bufferView", view(ib.array(), null)).put("componentType", 5125))
+                    .put("values", JSONObject().put("bufferView", view(vb.array(), null))))
             }
+            accs.put(acc); return accs.length() - 1
+        }
+        for (p in parts) {
             val mat = JSONObject().put("name", p.name)
-                .put("pbrMetallicRoughness", JSONObject().put("baseColorTexture", JSONObject().put("index", ti)).put("metallicFactor", 0).put("roughnessFactor", if (p.name.startsWith("eyes")) 0.2 else 0.7))
+                .put("pbrMetallicRoughness", JSONObject().put("baseColorTexture", JSONObject().put("index", tex(p.texture))).put("metallicFactor", 0).put("roughnessFactor", if (p.name.startsWith("eyes")) 0.2 else 0.7))
+            p.normalTex?.let { mat.put("normalTexture", JSONObject().put("index", tex(it))) }
             if (p.alpha) mat.put("alphaMode", "MASK").put("alphaCutoff", 0.4).put("doubleSided", true)
             materials.put(mat)
-            val pos = FloatArray(p.pos.size) { p.pos[it] * SCALE }
+            val pos = FloatArray(p.pos.size) { (p.pos[it] - if (it % 3 == 1) floor else 0f) * SCALE }
             val attrs = JSONObject().put("POSITION", accF(pos, 3, "VEC3", minmax = true)).put("NORMAL", accF(p.nrm, 3, "VEC3"))
                 .put("TEXCOORD_0", accF(p.uv, 2, "VEC2")).put("JOINTS_0", accU16(p.joints, 4, "VEC4")).put("WEIGHTS_0", accF(p.weights, 4, "VEC4"))
-            meshes.put(JSONObject().put("name", p.name).put("primitives", JSONArray().put(JSONObject().put("attributes", attrs).put("indices", accIdx(p.tris)).put("material", materials.length() - 1))))
-            nodes.put(JSONObject().put("name", p.name).put("mesh", meshes.length() - 1).put("skin", 0))
+            val prim = JSONObject().put("attributes", attrs).put("indices", accIdx(p.tris)).put("material", materials.length() - 1)
+            val mesh = JSONObject().put("name", p.name).put("primitives", JSONArray().put(prim))
+            // carry the face shapes over to this part through its links to the base mesh
+            val n = p.count; val per = p.refsPer
+            val per_part = shapeDeltas.map { d ->
+                FloatArray(n * 3) { i -> val v = i / 3; val k = i % 3; var x = 0f
+                    for (q in 0 until per) x += p.baseRefW[v * per + q] * d[p.baseRefs[v * per + q] * 3 + k]; x }
+            }
+            if (per_part.any { d -> d.any { it != 0f } }) {
+                val targets = JSONArray()
+                for (d in per_part) targets.put(JSONObject().put("POSITION", sparseTarget(d)))
+                prim.put("targets", targets)
+                mesh.put("weights", JSONArray(List(shapeKeys.size) { 0 }))
+                mesh.put("extras", JSONObject().put("targetNames", JSONArray(shapeKeys.map { it.substringAfter(':') })))
+            }
+            meshes.put(mesh)
+            val node = JSONObject().put("name", p.name).put("mesh", meshes.length() - 1).put("skin", 0)
+            if (p.hiddenUnderOutfit) node.put("extras", JSONObject().put("hidden_when_dressed", true))
+            nodes.put(node)
         }
         val j0 = nodes.length()
         for ((i, b) in bones.withIndex()) {

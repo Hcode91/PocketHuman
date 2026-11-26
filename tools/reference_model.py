@@ -52,11 +52,14 @@ for sid, val in S.get('sliders', {}).items():
         for s_ in grp['sliders']:
             if s_['id'] == sid:
                 for t in (s_['pos'] if val > 0 else s_['neg']): stack.append((t, abs(val)))
+for unit, val in S.get('units', {}).items():
+    for r, rw in race.items(): stack.append((f'expression/units/{r}/{unit}', rw * val))
 P = V.copy(); used = 0
 for n, w in stack:
     if w > 0.001 and n in tidx:
         i, d = target(n); P[i] += w * d; used += 1
 print('targets applied', used)
+P[:, 1] -= P[:13380, 1].min()   # feet on the ground
 
 # proxies
 prox = json.loads(rd('proxies.json'))
