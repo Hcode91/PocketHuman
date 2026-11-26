@@ -15,7 +15,7 @@ object GlbExporter {
     private const val SCALE = 0.1f
 
     /** only: export these parts instead of the character (e.g. an imported model rigged as-is); extraTex: texture bytes by path */
-    fun write(model: HumanModel, out: OutputStream, only: List<Part>? = null, extraTex: Map<String, ByteArray> = emptyMap(), anims: List<String> = model.state.anims) {
+    fun write(model: HumanModel, out: OutputStream, only: List<Part>? = null, extraTex: Map<String, ByteArray> = emptyMap(), anims: List<String> = model.state.anims, faceShapes: Boolean = true) {
         val parts = only ?: PartBuilder.build(model, true)
         // feet on the ground: lowest body vertex at y = 0
         var floor = Float.MAX_VALUE
@@ -57,7 +57,7 @@ object GlbExporter {
             textures.put(JSONObject().put("source", images.length() - 1).put("sampler", 0)); textures.length() - 1
         }
         // every face shape (MakeHuman units + ARKit units) as an offset field over the base mesh, in metres
-        val shapeKeys = model.lib.faceShapes()
+        val shapeKeys = if (faceShapes) model.lib.faceShapes() else emptyList()
         val shapeDeltas = shapeKeys.map { k -> model.lib.faceShapeDelta(k, model.state.race).also { d -> for (i in d.indices) d[i] *= SCALE } }
         fun sparseTarget(d: FloatArray): Int {
             val idx = ArrayList<Int>()

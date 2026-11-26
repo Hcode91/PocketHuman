@@ -342,3 +342,33 @@ class AnimTest {
         println("anim export ${System.currentTimeMillis() - t0} ms, ${File(System.getProperty("java.io.tmpdir"), "ph_anim.glb").length() / 1024} KB")
     }
 }
+
+class GameCharTest {
+    @Test fun exportsStarter() {
+        val tmp = java.nio.file.Files.createTempDirectory("phg").toFile()
+        val lib = Library(AssetSource { p -> File("src/main/assets/ph", p).readBytes() }, tmp)
+        val m = HumanModel(lib); m.state.macro["gender"] = 0f; m.state.macro["height"] = 0.45f
+        m.state.setRace("asian", 0.85f); m.state.hair = "hair_long01"; m.state.name = "Akari"
+        m.state.clothes.add("clothes_female_casualsuit01"); m.state.skin = m.matchSkin(); m.rebuild()
+        File("/tmp/akari_starter.glb").outputStream().use { GlbExporter.write(m, it) }
+        println("starter ${File("/tmp/akari_starter.glb").length() / 1024} KB")
+    }
+}
+
+class GameCastTest {
+    @Test fun exportsCast() {
+        val tmp = java.nio.file.Files.createTempDirectory("phc2").toFile()
+        val lib = Library(AssetSource { p -> File("src/main/assets/ph", p).readBytes() }, tmp)
+        fun make(name: String, setup: HumanModel.() -> Unit, anims: List<String>, out: String) {
+            val m = HumanModel(lib); m.state.name = name; m.setup(); m.state.skin = m.matchSkin(); m.rebuild()
+            File(out).outputStream().use { GlbExporter.write(m, it, anims = anims, faceShapes = false) }
+            println("$name ${File(out).length() / 1024} KB")
+        }
+        make("Ren", { state.macro["gender"] = 1f; state.macro["muscle"] = 0.62f; state.macro["height"] = 0.55f; state.setRace("asian", 0.9f)
+            state.hair = "hair_short02"; state.clothes.add("clothes_male_worksuit01"); state.clothes.add("clothes_shoes02") },
+            DEFAULT_ANIMS + listOf("LayToIdle", "Idle_Talking_Loop"), "/tmp/ren.glb")
+        make("Genzo", { state.macro["gender"] = 1f; state.macro["age"] = 0.88f; state.macro["weight"] = 0.45f; state.setRace("asian", 0.9f)
+            state.hair = "hair_short04"; state.clothes.add("clothes_male_casualsuit03"); state.clothes.add("clothes_shoes01") },
+            listOf("Idle_Loop", "Idle_Talking_Loop", "Idle_No_Loop", "Yes", "Walk_Loop"), "/tmp/genzo.glb")
+    }
+}
