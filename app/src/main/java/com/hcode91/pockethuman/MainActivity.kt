@@ -16,6 +16,7 @@ import android.widget.*
 import org.json.JSONObject
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.roundToInt
 import kotlin.random.Random
 
 class MainActivity : Activity() {
@@ -103,7 +104,7 @@ class MainActivity : Activity() {
         }
     }
     private fun updateInfo() {
-        info.text = "%s  ·  %.2f m  ·  age %d".format(model.state.name, model.heightMetres(), model.ageYears().toInt())
+        info.text = "%s  ·  %.2f m  ·  age %d".format(model.state.name, model.heightMetres(), model.ageYears().roundToInt())
     }
 
     // ------------------------------------------------------------------ tabs
@@ -189,7 +190,24 @@ class MainActivity : Activity() {
                     }
                     header("Body")
                 }
-                switch("Adult anatomy (genitals, genital sliders and skins)", s.adult) { s.adult = it; if (!it && lib.skins[s.skin].adult) s.skin = model.matchSkin(); showTab("Body") }
+                var ageRestrictedViews = emptyList<View>()
+                val youthNotice = TextView(this).apply {
+                    text = "Characters under 18 wear a base outfit."
+                    textSize = 13f
+                    setTextColor(dim)
+                    visibility = if (s.isUnderage) View.VISIBLE else View.GONE
+                }
+                slider("Age", model.ageYears(), HumanState.MIN_AGE_YEARS.toFloat(), HumanState.MAX_AGE_YEARS.toFloat(),
+                    { "${it.roundToInt()} years" }) {
+                    s.macro["age"] = HumanState.ageForYears(it.roundToInt())
+                    ageRestrictedViews.forEach { view -> view.visibility = if (s.isUnderage) View.GONE else View.VISIBLE }
+                    youthNotice.visibility = if (s.isUnderage) View.VISIBLE else View.GONE
+                    changed()
+                }
+                content.addView(youthNotice)
+                if (s.isUnderage) s.adult = false
+                val adultControlsStart = content.childCount
+                switch("Adult anatomy (genitals, genital sliders and skins)", s.adult) { s.adult = it; if (!it && lib.skins.getOrNull(s.skin)?.adult == true) s.skin = model.matchSkin(); showTab("Body") }
                 if (s.adult) {
                     header("Male genitals (3D)")
                     val gr = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -210,14 +228,18 @@ class MainActivity : Activity() {
                     for ((label, v) in listOf("By gender" to 0, "Show" to 1, "Hide" to 2)) gd.addView(chip(label, s.genitalDetail == v) { s.genitalDetail = v; changed(); saveLast(); showTab("Body") })
                     content.addView(gd)
                 }
+                val adultControlsEnd = content.childCount
                 slider("Gender", s.macro["gender"]!!, 0f, 1f, { if (it < 0.15f) "female" else if (it > 0.85f) "male" else pct(it) }) { s.macro["gender"] = it; changed() }
-                slider("Age", s.macro["age"]!!, 0.5f, 1f, { "${(25 + (it - 0.5f) * 130).toInt()} years" }) { s.macro["age"] = it; changed() }
                 slider("Muscle", s.macro["muscle"]!!, 0f, 1f, ::pct) { s.macro["muscle"] = it; changed() }
                 slider("Weight", s.macro["weight"]!!, 0f, 1f, ::pct) { s.macro["weight"] = it; changed() }
                 slider("Height", s.macro["height"]!!, 0f, 1f, ::pct) { s.macro["height"] = it; changed() }
                 slider("Proportions", s.macro["proportions"]!!, 0f, 1f, ::pct) { s.macro["proportions"] = it; changed() }
+                val breastControlsStart = content.childCount
                 slider("Breast size", s.macro["cupsize"]!!, 0f, 1f, ::pct) { s.macro["cupsize"] = it; changed() }
                 slider("Breast firmness", s.macro["firmness"]!!, 0f, 1f, ::pct) { s.macro["firmness"] = it; changed() }
+                ageRestrictedViews = ((adultControlsStart until adultControlsEnd).toList() +
+                    (breastControlsStart until content.childCount)).map { content.getChildAt(it) }
+                if (s.isUnderage) ageRestrictedViews.forEach { it.visibility = View.GONE }
             }
             "Ethnicity" -> {
                 header("Starting points (real faces vary a lot within every group, so adjust freely)")
@@ -236,7 +258,7 @@ class MainActivity : Activity() {
             }
             "Details" -> {
                 val chips = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-                val groups = lib.defs.groups.filter { !it.adult || s.adult }
+                val groups = lib.defs.groups.filter { model.canUseGroup(it) }
                 for (g in groups) chips.addView(chip(g.name, g.name == detailGroup) { detailGroup = g.name; showTab("Details") })
                 content.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(chips) })
                 val g = groups.firstOrNull { it.name == detailGroup } ?: groups.first()
@@ -253,7 +275,8 @@ class MainActivity : Activity() {
             }
             "Skin" -> {
                 switch("Match skin to ethnicity, gender and age", s.autoSkin) { s.autoSkin = it }
-                lib.skins.forEachIndexed { i, sk -> if (!sk.adult || s.adult) option(sk.name, s.skin == i) { s.skin = i; s.autoSkin = false } }
+                val selectedSkin = model.selectedSkin()
+                lib.skins.forEachIndexed { i, sk -> if ((!sk.adult || s.adult) && model.canUseSkin(sk)) option(sk.name, selectedSkin == sk) { s.skin = i; s.autoSkin = false } }
             }
             "Face" -> {
                 header("Preview an expression (exports keep a neutral face, with every shape included as a blend shape)")
@@ -264,7 +287,7 @@ class MainActivity : Activity() {
                 for (u in lib.defs.expressions) slider(u.replace('-', ' '), s.expression["mh:$u"] ?: 0f, 0f, 1f, ::pct) { x -> if (x < 0.01f) s.expression.remove("mh:$u") else s.expression["mh:$u"] = x; changed() }
                 if (lib.packFaceShapes.isNotEmpty()) {
                     header("From packs (visemes and more)")
-                    for (k in lib.packFaceShapes) slider(k.substringAfterLast('/').replace('_', ' '), s.expression["pack:$k"] ?: 0f, 0f, 1f, ::pct) { x -> if (x < 0.01f) s.expression.remove("pack:$k") else s.expression["pack:$k"] = x; changed() }
+                    for (k in lib.packFaceShapes.filter { model.canUseFaceShape("pack:$it") }) slider(k.substringAfterLast('/').replace('_', ' '), s.expression["pack:$k"] ?: 0f, 0f, 1f, ::pct) { x -> if (x < 0.01f) s.expression.remove("pack:$k") else s.expression["pack:$k"] = x; changed() }
                 }
                 header("ARKit face units")
                 for (u in lib.defs.arkit) slider(u, s.expression["arkit:$u"] ?: 0f, 0f, 1f, ::pct) { x -> if (x < 0.01f) s.expression.remove("arkit:$u") else s.expression["arkit:$u"] = x; changed() }
@@ -287,8 +310,9 @@ class MainActivity : Activity() {
                     }
                     header("Included clothes")
                 }
-                header("Tap to put on or take off. Body under clothes is hidden, and kept as its own part in the export.")
-                for (p in lib.ofKind("clothes").filter { !it.id.startsWith("my_") }) toggleOption(p.label + (lib.credits[p.id]?.takeIf { !it.license.equals("CC0", true) }?.let { "  (${it.license})" } ?: ""), p.id in s.clothes) { if (!s.clothes.remove(p.id)) s.clothes.add(p.id) }
+                header(if (s.isUnderage) "Tap to put on or take off. The base outfit stays on under other clothes."
+                    else "Tap to put on or take off. Body under clothes is hidden, and kept as its own part in the export.")
+                for (p in lib.ofKind("clothes").filter { !it.id.startsWith("my_") && (!s.isUnderage || !lib.isAdultCommunityAsset(it.id)) }) toggleOption(p.label + (lib.credits[p.id]?.takeIf { !it.license.equals("CC0", true) }?.let { "  (${it.license})" } ?: ""), p.id in s.clothes) { if (!s.clothes.remove(p.id)) s.clothes.add(p.id) }
             }
             "Eyes" -> {
                 val eyes = lib.proxies.firstOrNull { it.kind == "eyes" }
@@ -545,7 +569,7 @@ class MainActivity : Activity() {
                 lib = makeLibrary(); model = HumanModel(lib); model.state.load(keep); model.state.details[sliderId] = 1f; model.rebuild()
                 // 2. skin from the model, painted onto the reshaped body
                 say("Painting skin…")
-                val baseSkin = lib.skins[model.state.skin.coerceIn(0, lib.skins.size - 1)]
+                val baseSkin = model.selectedSkin()
                 val baseSampler = bitmapSampler(lib.am.bytes(baseSkin.texture), 2048)!!
                 val colors = draftColors
                 if (colors != null) {
@@ -663,7 +687,7 @@ class MainActivity : Activity() {
         button("‹ Back to packs") { showTab("Packs") }
         content.addView(TextView(this).apply { setTextColor(dim); textSize = 12f; setPadding(0, dp(6), 0, dp(4))
             text = "Single items shared by MakeHuman users, downloaded from makehumancommunity.org. CC0 = free to use. CC-BY = free to use, but credit the author (the Save tab lists who). Quality varies: some items may not fit or may look rough." +
-                (if (model.state.adult) "" else "\nTurn on Adult anatomy in the Body tab to see 18+ items.") })
+                (if (model.state.adult || model.state.isUnderage) "" else "\nTurn on Adult anatomy in the Body tab to see 18+ items.") })
         content.addView(EditText(this).apply {
             setText(commQuery); hint = "Search (name, author, category)"; setTextColor(fg); setHintTextColor(dim); isSingleLine = true
             imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
@@ -793,8 +817,9 @@ class MainActivity : Activity() {
 
     private fun randomise() {
         val s = model.state; val r = Random(System.nanoTime())
-        for (k in s.macro.keys) s.macro[k] = (0.5f + (r.nextFloat() - 0.5f) * 0.7f).coerceIn(0f, 1f)
-        s.macro["age"] = 0.5f + r.nextFloat() * 0.25f
+        val underage = s.isUnderage
+        for (k in s.macro.keys.filter { it != "age" }) s.macro[k] = (0.5f + (r.nextFloat() - 0.5f) * 0.7f).coerceIn(0f, 1f)
+        s.macro["age"] = if (underage) HumanState.ageForYears(r.nextInt(1, 18)) else 0.5f + r.nextFloat() * 0.25f
         s.macro["gender"] = if (r.nextBoolean()) r.nextFloat() * 0.1f else 0.9f + r.nextFloat() * 0.1f
         val a = r.nextFloat(); val b = r.nextFloat() * (1 - a)
         s.race["african"] = a; s.race["asian"] = b; s.race["caucasian"] = 1 - a - b

@@ -22,25 +22,33 @@ object PartBuilder {
         val pos = FloatArray(n * 3) { v[bm.renderMap[it / 3] * 3 + it % 3] }
         val j = if (forExport) IntArray(n * 4) { rig.joints[bm.renderMap[it / 4] * 4 + it % 4] } else IntArray(0)
         val w = if (forExport) FloatArray(n * 4) { rig.weights[bm.renderMap[it / 4] * 4 + it % 4] } else FloatArray(0)
-        val skin = lib.skins[model.state.skin.coerceIn(0, lib.skins.size - 1)]
+        val skin = model.selectedSkin()
+        val youthOutfit = if (model.useYouthOutfit) bm.youthOutfitFaces else null
         val ids = model.proxyIds().filter { it.first !in skip }
         // body vertices covered by the chosen clothes
         val hidden = BooleanArray(bm.nV)
         for ((id, _) in ids) lib.proxies.first { it.id == id }.delete.forEach { if (it < bm.nV) hidden[it] = true }
         extraHidden?.let { e -> for (i in e.indices) if (e[i]) hidden[i] = true }
-        val vis = ArrayList<Int>(); val under = ArrayList<Int>()
+        val vis = ArrayList<Int>(); val under = ArrayList<Int>(); val baseOutfit = ArrayList<Int>()
         var t = 0
         while (t < bm.tris.size) {
             val a = bm.tris[t]; val b = bm.tris[t + 1]; val c = bm.tris[t + 2]
             val cov = hidden[bm.renderMap[a]] || hidden[bm.renderMap[b]] || hidden[bm.renderMap[c]]
-            (if (cov) under else vis).apply { add(a); add(b); add(c) }
+            val part = when {
+                youthOutfit?.get(t / 3) == true -> baseOutfit
+                cov -> under
+                else -> vis
+            }
+            part.apply { add(a); add(b); add(c) }
             t += 3
         }
         val nrm = weldedNormals(pos, bm.tris, n)
         val refs = bm.renderMap; val rw1 = FloatArray(n) { 1f }
         val bodyTex = model.bodyTexture(skin)
         out.add(Part("body", pos, nrm, bm.uv, vis.toIntArray(), bodyTex, false, skin.normal, j, w, refs, rw1, 1))
-        if (forExport && under.isNotEmpty())
+        if (baseOutfit.isNotEmpty())
+            out.add(Part("youth_base_outfit", pos, nrm, bm.uv, baseOutfit.toIntArray(), "youth_base_outfit.png", false, null, j, w, IntArray(0), FloatArray(0), 0))
+        if (forExport && youthOutfit == null && under.isNotEmpty())
             out.add(Part("body_under_outfit", pos, nrm, bm.uv, under.toIntArray(), bodyTex, false, skin.normal, j, w, refs, rw1, 1, true))
         // MakeHuman's own male genital piece, with the body skin (its own patch of the skin texture)
         val st = model.state; val g = lib.genitals
@@ -51,7 +59,7 @@ object PartBuilder {
             var any = false; for (i in 0 until 13380) { if (!hidden[i]) continue
                 val dx = v[i * 3] - cx; val dy = v[i * 3 + 1] - cy; val dz = v[i * 3 + 2] - cz; if (dx * dx + dy * dy + dz * dz < 0.8f * 0.8f) { any = true; break } }
             any }
-        if (g != null && !covered && st.adult && (st.genitals == 1 || (st.genitals == 0 && st.macro["gender"]!! >= 0.5f)) && "genitals" !in skip) {
+        if (g != null && !covered && youthOutfit == null && st.adult && (st.genitals == 1 || (st.genitals == 0 && st.macro["gender"]!! >= 0.5f)) && "genitals" !in skip) {
             val (gm, guv, gt) = g; val gn = gm.size
             val gp = FloatArray(gn * 3) { v[gm[it / 3] * 3 + it % 3] }
             val gj = if (forExport) IntArray(gn * 4) { rig.joints[gm[it / 4] * 4 + it % 4] } else IntArray(0)
