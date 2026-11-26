@@ -84,7 +84,7 @@ class OutfitTest {
 }
 
 class CharacterTest {
-    private fun png(argb: IntArray, w: Int, h: Int): ByteArray {
+    fun png(argb: IntArray, w: Int, h: Int): ByteArray {
         val raw = java.io.ByteArrayOutputStream()
         for (y in 0 until h) { raw.write(0); for (x in 0 until w) { val c = argb[y * w + x]; raw.write((c shr 16) and 0xff); raw.write((c shr 8) and 0xff); raw.write(c and 0xff) } }
         val z = java.io.ByteArrayOutputStream(); java.util.zip.DeflaterOutputStream(z).use { it.write(raw.toByteArray()) }
@@ -220,5 +220,27 @@ class GenitalsClothesTest {
         org.junit.Assert.assertFalse(PartBuilder.build(m, false).any { it.name == "genitals" })
         m.state.adult = false; m.state.clothes.clear(); m.rebuild()
         org.junit.Assert.assertFalse(PartBuilder.build(m, false).any { it.name == "genitals" })
+    }
+}
+
+
+class GenitalDetailTest {
+    @Test fun paintsOntoDarkSkin() {
+        val rawF = File("/tmp/afr.rgb"); if (!rawF.exists()) return
+        val tmp = java.nio.file.Files.createTempDirectory("phgd").toFile()
+        val srcOf = AssetSource { p -> if (p.startsWith("imported/")) File(tmp, p).readBytes() else File("src/main/assets/ph", p).readBytes() }
+        val lib = Library(srcOf, tmp)
+        val dec = ImageDecoder { _ -> val b = rawF.readBytes(); Triple(2048, 2048, IntArray(2048 * 2048) { i -> (0xff shl 24) or ((b[i * 3].toInt() and 255) shl 16) or ((b[i * 3 + 1].toInt() and 255) shl 8) or (b[i * 3 + 2].toInt() and 255) }) }
+        val ct = CharacterTest()
+        val writer = ImageWriter { a, w, h, dir, base -> dir.mkdirs(); File(dir, "$base.png").writeBytes(ct.png(a, w, h)); "$base.png" }
+        HumanModel.detailProvider = { l, tex -> GenitalDetail.skinWithDetail(l, tex, tmp, dec, writer) }
+        val m = HumanModel(lib); m.state.macro["gender"] = 0f; m.state.adult = true; m.state.hair = null
+        m.state.skin = lib.skins.indexOfFirst { it.texture.contains("young_african_female") }; m.state.autoSkin = false; m.rebuild()
+        val t0 = System.currentTimeMillis(); val tex = m.bodyTexture(lib.skins[m.state.skin]); println("detail skin $tex in ${System.currentTimeMillis() - t0} ms")
+        org.junit.Assert.assertTrue(tex.startsWith("imported/genital_skins/"))
+        File(tmp, tex).copyTo(File("/tmp/ph_gd_skin.png"), true)
+        File(System.getProperty("java.io.tmpdir"), "ph_gd.glb").outputStream().use { GlbExporter.write(m, it) }
+        m.state.adult = false; org.junit.Assert.assertEquals(lib.skins[m.state.skin].texture, m.bodyTexture(lib.skins[m.state.skin]))
+        HumanModel.detailProvider = null
     }
 }

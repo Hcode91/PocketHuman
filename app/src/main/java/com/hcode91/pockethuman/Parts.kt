@@ -38,9 +38,10 @@ object PartBuilder {
         }
         val nrm = weldedNormals(pos, bm.tris, n)
         val refs = bm.renderMap; val rw1 = FloatArray(n) { 1f }
-        out.add(Part("body", pos, nrm, bm.uv, vis.toIntArray(), skin.texture, false, skin.normal, j, w, refs, rw1, 1))
+        val bodyTex = model.bodyTexture(skin)
+        out.add(Part("body", pos, nrm, bm.uv, vis.toIntArray(), bodyTex, false, skin.normal, j, w, refs, rw1, 1))
         if (forExport && under.isNotEmpty())
-            out.add(Part("body_under_outfit", pos, nrm, bm.uv, under.toIntArray(), skin.texture, false, skin.normal, j, w, refs, rw1, 1, true))
+            out.add(Part("body_under_outfit", pos, nrm, bm.uv, under.toIntArray(), bodyTex, false, skin.normal, j, w, refs, rw1, 1, true))
         // MakeHuman's own male genital piece, with the body skin (its own patch of the skin texture)
         val st = model.state; val g = lib.genitals
         // hidden under clothes that cover the crotch

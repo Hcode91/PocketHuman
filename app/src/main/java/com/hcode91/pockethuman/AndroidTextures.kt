@@ -49,3 +49,11 @@ object AndroidImageWriter : ImageWriter {
         bmp.recycle(); return name
     }
 }
+
+object AndroidImageDecoder : ImageDecoder {
+    override fun decode(bytes: ByteArray): Triple<Int, Int, IntArray>? {
+        val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
+        val w = bmp.width; val h = bmp.height; val px = IntArray(w * h); bmp.getPixels(px, 0, w, 0, 0, w, h); bmp.recycle()
+        return Triple(w, h, px)
+    }
+}

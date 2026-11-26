@@ -295,3 +295,28 @@ json.dump(skins, open(out('skins.json'), 'w'), separators=(',', ':'))
 print('skins', len(skins))
 open(out('LICENSE-ASSETS.txt'), 'w').write('All assets in this folder come from MakeHuman / MPFB2 and the MakeHuman community asset packs\n'
     '(makehuman_system_assets, skins01, faceunits01) and are released under CC0 1.0. https://creativecommons.org/publicdomain/zero/1.0/\n')
+
+
+# ---------------------------------------------------------------- genital detail layer (from a CC0 skins01 skin)
+# Stored as colour ratios against the skin's own smoothed tone, so it can be laid onto any skin colour.
+def build_genital_detail():
+    from PIL import Image, ImageFilter
+    src_path = os.path.join(SKINS01, 'skins', 'saltycowdawg_genuine_caucasian_female_with_genitals', 'young_lightskinned_female_genuine_genitals_blush_dark_diffuse.png')
+    if not os.path.exists(src_path): return
+    W = 2048
+    src = np.asarray(Image.open(src_path).convert('RGB').resize((W, W))).astype(np.float32) / 255
+    rects = [(735, 1140, 830, 1290)]   # the crotch of the main body island (the separate patch at the left is not body UV)
+    mask = np.zeros((W, W), np.float32)
+    for x0, y0, x1, y1 in rects: mask[y0:y1, x0:x1] = 1
+    mask = np.asarray(Image.fromarray((mask * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(12))).astype(np.float32) / 255
+    sm = np.stack([np.asarray(Image.fromarray((src[..., c] * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(70))).astype(np.float32) / 255 for c in range(3)], -1)
+    ratio = np.clip(src / np.maximum(sm, 0.03), 0, 2)
+    with open(out('genital_detail.bin'), 'wb') as f:
+        f.write(struct.pack('<4sII', b'PHD1', W, len(rects)))
+        for x0, y0, x1, y1 in rects:
+            m = 24; x0, y0, x1, y1 = max(0, x0 - m), max(0, y0 - m), min(W, x1 + m), min(W, y1 + m)
+            f.write(struct.pack('<4I', x0, y0, x1 - x0, y1 - y0))
+            px = np.concatenate([np.round(ratio[y0:y1, x0:x1] * 127.5), np.round(mask[y0:y1, x0:x1, None] * 255)], -1)
+            f.write(np.clip(px, 0, 255).astype(np.uint8).tobytes())
+    print('genital detail layer written')
+build_genital_detail()

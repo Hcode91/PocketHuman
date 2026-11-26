@@ -21,6 +21,8 @@ class HumanState {
     var autoSkin = true
     /** 3D male genital piece (needs adult on): 0 = by gender, 1 = always, 2 = never */
     var genitals = 0
+    /** painted female genital detail on the skin (needs adult on): 0 = by gender, 1 = always, 2 = never */
+    var genitalDetail = 0
     val clothes = LinkedHashSet<String>()
     /** Expression shown in the app only; exports keep a neutral face plus every expression as a blend shape. */
     val expression = HashMap<String, Float>()
@@ -39,7 +41,7 @@ class HumanState {
         put("format", "pockethuman"); put("version", 1); put("name", name)
         put("macro", JSONObject(macro as Map<*, *>)); put("race", JSONObject(race as Map<*, *>)); put("details", JSONObject(details as Map<*, *>))
         put("skin", skin); put("eyeColour", eyeColour); put("eyebrows", eyebrows ?: ""); put("eyelashes", eyelashes ?: ""); put("hair", hair ?: "")
-        put("hairVariant", hairVariant); put("adult", adult); put("autoSkin", autoSkin); put("genitals", genitals)
+        put("hairVariant", hairVariant); put("adult", adult); put("autoSkin", autoSkin); put("genitals", genitals); put("genitalDetail", genitalDetail)
         put("clothes", org.json.JSONArray(clothes.toList()))
     }
     fun load(j: JSONObject) {
@@ -50,7 +52,7 @@ class HumanState {
         skin = j.optInt("skin", 0); eyeColour = j.optInt("eyeColour", 0); hairVariant = j.optInt("hairVariant", 0)
         eyebrows = j.optString("eyebrows").ifEmpty { null }; eyelashes = j.optString("eyelashes").ifEmpty { null }; hair = j.optString("hair").ifEmpty { null }
         name = j.optString("name", "Character")
-        adult = j.optBoolean("adult", false); autoSkin = j.optBoolean("autoSkin", true); genitals = j.optInt("genitals", 0)
+        adult = j.optBoolean("adult", false); autoSkin = j.optBoolean("autoSkin", true); genitals = j.optInt("genitals", 0); genitalDetail = j.optInt("genitalDetail", 0)
         clothes.clear(); j.optJSONArray("clothes")?.let { a -> for (i in 0 until a.length()) clothes.add(a.getString(i)) }
         expression.clear()
     }
@@ -59,6 +61,18 @@ class HumanState {
 /** Turns a HumanState into vertex positions: base + weighted morph targets. */
 class HumanModel(val lib: Library) {
     val state = HumanState()
+
+    /** The body's skin texture: the chosen skin, or a copy of it with genital detail painted in when that is on. */
+    fun bodyTexture(skin: Skin): String {
+        val st = state
+        val want = st.adult && !skin.adult && (st.genitalDetail == 1 || (st.genitalDetail == 0 && st.macro["gender"]!! < 0.5f))
+        if (!want) return skin.texture
+        return runCatching { detailProvider?.invoke(lib, skin.texture) }.getOrNull() ?: skin.texture
+    }
+    companion object {
+        /** Set by the app: makes/caches the skin copy with detail (needs image decoding, so it lives outside the model). */
+        @Volatile var detailProvider: ((Library, String) -> String?)? = null
+    }
     /** Shape with the preview expression applied (what the app shows). */
     var verts = lib.base.verts.copyOf()
     /** Same shape with a neutral face (what gets exported). */

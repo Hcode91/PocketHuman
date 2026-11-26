@@ -37,6 +37,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        HumanModel.detailProvider = { l, tex -> synchronized(this) { GenitalDetail.skinWithDetail(l, tex, filesDir, AndroidImageDecoder, AndroidImageWriter) } }
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val loading = TextView(this).apply { text = "Loading PocketHuman…"; setTextColor(fg); gravity = Gravity.CENTER; textSize = 18f }
         setContentView(loading)
@@ -193,7 +194,10 @@ class MainActivity : Activity() {
                     val gr = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
                     for ((label, v) in listOf("By gender" to 0, "Show" to 1, "Hide" to 2)) gr.addView(chip(label, s.genitals == v) { s.genitals = v; changed(); saveLast(); showTab("Body") })
                     content.addView(gr)
-                    header("Female: pick a \"with genitals\" skin in the Skin tab. Size sliders are in Details → genitals.")
+                    header("Female genital detail (painted onto any skin)")
+                    val gd = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                    for ((label, v) in listOf("By gender" to 0, "Show" to 1, "Hide" to 2)) gd.addView(chip(label, s.genitalDetail == v) { s.genitalDetail = v; changed(); saveLast(); showTab("Body") })
+                    content.addView(gd)
                 }
                 slider("Gender", s.macro["gender"]!!, 0f, 1f, { if (it < 0.15f) "female" else if (it > 0.85f) "male" else pct(it) }) { s.macro["gender"] = it; changed() }
                 slider("Age", s.macro["age"]!!, 0.5f, 1f, { "${(25 + (it - 0.5f) * 130).toInt()} years" }) { s.macro["age"] = it; changed() }
