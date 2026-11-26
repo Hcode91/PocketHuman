@@ -191,3 +191,34 @@ class DeleteCharacterTest {
         m = HumanModel(Library(srcOf, tmp)); m.state.details[b] = 1f; m.rebuild()   // remaining shape still loads
     }
 }
+
+class GenitalsTest {
+    @Test fun shapes() {
+        val tmp = java.nio.file.Files.createTempDirectory("phg").toFile()
+        val srcOf = AssetSource { p -> File("src/main/assets/ph", p).readBytes() }
+        val lib = Library(srcOf, tmp)
+        for (g in listOf(0f, 1f)) {
+            val m = HumanModel(lib); m.state.macro["gender"] = g; m.state.adult = true; m.rebuild(); val a = m.verts.copyOf()
+            for (id in listOf("genitals/penis-length-decr-incr", "genitals/penis-testicles-decr-incr")) {
+                m.state.details[id] = 1f; m.rebuild(); var mx = 0f; for (i in a.indices) mx = maxOf(mx, Math.abs(m.verts[i] - a[i])); println("gender $g $id max move ${mx} dm"); m.state.details.remove(id) }
+            m.state.hair = null; m.rebuild()
+            File(System.getProperty("java.io.tmpdir"), "ph_gen$g.glb").outputStream().use { GlbExporter.write(m, it) }
+        }
+        println("has penis target: " + lib.targets.has("genitals/penis-length-incr") + " " + lib.targets.has("genitals/penis-length-decr-incr"))
+    }
+}
+
+class GenitalsClothesTest {
+    @Test fun hiddenUnderTrousers() {
+        val tmp = java.nio.file.Files.createTempDirectory("phgc").toFile()
+        val lib = Library(AssetSource { p -> File("src/main/assets/ph", p).readBytes() }, tmp)
+        val m = HumanModel(lib); m.state.macro["gender"] = 1f; m.state.adult = true; m.rebuild()
+        org.junit.Assert.assertTrue(PartBuilder.build(m, false).any { it.name == "genitals" })
+        val pants = lib.proxies.first { it.id == "clothes_male_casualsuit01" }
+        m.state.clothes.add(pants.id); m.rebuild()
+        println("with ${pants.id}: genitals shown = ${PartBuilder.build(m, false).any { it.name == "genitals" }}")
+        org.junit.Assert.assertFalse(PartBuilder.build(m, false).any { it.name == "genitals" })
+        m.state.adult = false; m.state.clothes.clear(); m.rebuild()
+        org.junit.Assert.assertFalse(PartBuilder.build(m, false).any { it.name == "genitals" })
+    }
+}

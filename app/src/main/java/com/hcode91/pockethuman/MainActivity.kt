@@ -187,7 +187,14 @@ class MainActivity : Activity() {
                     }
                     header("Body")
                 }
-                switch("Adult anatomy (genital shapes and skins)", s.adult) { s.adult = it; if (!it && lib.skins[s.skin].adult) s.skin = model.matchSkin() }
+                switch("Adult anatomy (genitals, genital sliders and skins)", s.adult) { s.adult = it; if (!it && lib.skins[s.skin].adult) s.skin = model.matchSkin(); showTab("Body") }
+                if (s.adult) {
+                    header("Male genitals (3D)")
+                    val gr = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                    for ((label, v) in listOf("By gender" to 0, "Show" to 1, "Hide" to 2)) gr.addView(chip(label, s.genitals == v) { s.genitals = v; changed(); saveLast(); showTab("Body") })
+                    content.addView(gr)
+                    header("Female: pick a \"with genitals\" skin in the Skin tab. Size sliders are in Details → genitals.")
+                }
                 slider("Gender", s.macro["gender"]!!, 0f, 1f, { if (it < 0.15f) "female" else if (it > 0.85f) "male" else pct(it) }) { s.macro["gender"] = it; changed() }
                 slider("Age", s.macro["age"]!!, 0.5f, 1f, { "${(25 + (it - 0.5f) * 130).toInt()} years" }) { s.macro["age"] = it; changed() }
                 slider("Muscle", s.macro["muscle"]!!, 0f, 1f, ::pct) { s.macro["muscle"] = it; changed() }

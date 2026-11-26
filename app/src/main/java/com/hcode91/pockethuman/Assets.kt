@@ -167,6 +167,10 @@ class Library(val am: AssetSource, importRoot: java.io.File? = null) {
     val targets = Targets(am)
     val defs = SliderDefs(am)
     val rig = Rig(am, base.nV)
+    /** MakeHuman's male genital piece: render map into base verts, uvs, triangles (null if the asset is missing) */
+    val genitals: Triple<IntArray, FloatArray, IntArray>? = runCatching {
+        val r = Bin(am.bytes("genitals.bin")); r.skip(4); val n = r.int(); val m = r.ints(n); val uv = r.floats(n * 2); val nt = r.int(); Triple(m, uv, r.ints(nt * 3))
+    }.getOrNull()
     val proxies = ArrayList<ProxyInfo>()
     val skins = ArrayList<Skin>()
     /** extra face shapes from imported packs (visemes etc.): target names */

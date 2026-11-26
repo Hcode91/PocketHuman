@@ -19,6 +19,8 @@ class HumanState {
     var name = "Character"
     var adult = false
     var autoSkin = true
+    /** 3D male genital piece (needs adult on): 0 = by gender, 1 = always, 2 = never */
+    var genitals = 0
     val clothes = LinkedHashSet<String>()
     /** Expression shown in the app only; exports keep a neutral face plus every expression as a blend shape. */
     val expression = HashMap<String, Float>()
@@ -37,7 +39,7 @@ class HumanState {
         put("format", "pockethuman"); put("version", 1); put("name", name)
         put("macro", JSONObject(macro as Map<*, *>)); put("race", JSONObject(race as Map<*, *>)); put("details", JSONObject(details as Map<*, *>))
         put("skin", skin); put("eyeColour", eyeColour); put("eyebrows", eyebrows ?: ""); put("eyelashes", eyelashes ?: ""); put("hair", hair ?: "")
-        put("hairVariant", hairVariant); put("adult", adult); put("autoSkin", autoSkin)
+        put("hairVariant", hairVariant); put("adult", adult); put("autoSkin", autoSkin); put("genitals", genitals)
         put("clothes", org.json.JSONArray(clothes.toList()))
     }
     fun load(j: JSONObject) {
@@ -48,7 +50,7 @@ class HumanState {
         skin = j.optInt("skin", 0); eyeColour = j.optInt("eyeColour", 0); hairVariant = j.optInt("hairVariant", 0)
         eyebrows = j.optString("eyebrows").ifEmpty { null }; eyelashes = j.optString("eyelashes").ifEmpty { null }; hair = j.optString("hair").ifEmpty { null }
         name = j.optString("name", "Character")
-        adult = j.optBoolean("adult", false); autoSkin = j.optBoolean("autoSkin", true)
+        adult = j.optBoolean("adult", false); autoSkin = j.optBoolean("autoSkin", true); genitals = j.optInt("genitals", 0)
         clothes.clear(); j.optJSONArray("clothes")?.let { a -> for (i in 0 until a.length()) clothes.add(a.getString(i)) }
         expression.clear()
     }

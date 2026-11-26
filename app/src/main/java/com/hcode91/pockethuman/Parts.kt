@@ -41,6 +41,22 @@ object PartBuilder {
         out.add(Part("body", pos, nrm, bm.uv, vis.toIntArray(), skin.texture, false, skin.normal, j, w, refs, rw1, 1))
         if (forExport && under.isNotEmpty())
             out.add(Part("body_under_outfit", pos, nrm, bm.uv, under.toIntArray(), skin.texture, false, skin.normal, j, w, refs, rw1, 1, true))
+        // MakeHuman's own male genital piece, with the body skin (its own patch of the skin texture)
+        val st = model.state; val g = lib.genitals
+        // hidden under clothes that cover the crotch
+        val covered = g != null && run {
+            var cx = 0f; var cy = 0f; var cz = 0f; for (i in g.first) { cx += v[i * 3]; cy += v[i * 3 + 1]; cz += v[i * 3 + 2] }
+            val k = g.first.size.toFloat(); cx /= k; cy /= k; cz /= k
+            var any = false; for (i in 0 until 13380) { if (!hidden[i]) continue
+                val dx = v[i * 3] - cx; val dy = v[i * 3 + 1] - cy; val dz = v[i * 3 + 2] - cz; if (dx * dx + dy * dy + dz * dz < 0.8f * 0.8f) { any = true; break } }
+            any }
+        if (g != null && !covered && st.adult && (st.genitals == 1 || (st.genitals == 0 && st.macro["gender"]!! >= 0.5f)) && "genitals" !in skip) {
+            val (gm, guv, gt) = g; val gn = gm.size
+            val gp = FloatArray(gn * 3) { v[gm[it / 3] * 3 + it % 3] }
+            val gj = if (forExport) IntArray(gn * 4) { rig.joints[gm[it / 4] * 4 + it % 4] } else IntArray(0)
+            val gw = if (forExport) FloatArray(gn * 4) { rig.weights[gm[it / 4] * 4 + it % 4] } else FloatArray(0)
+            out.add(Part("genitals", gp, weldedNormals(gp, gt, gn), guv, gt, skin.texture, false, skin.normal, gj, gw, gm, FloatArray(gn) { 1f }, 1))
+        }
         for ((id, variant) in ids) {
             val pm = lib.proxy(id)
             val vars = pm.info.variants; if (vars.isEmpty()) continue

@@ -65,6 +65,15 @@ with open(out('base.bin'), 'wb') as f:
     f.write(struct.pack('<I', len(rv))); f.write(rv.astype('<u2').tobytes()); f.write(uv.astype('<f4').tobytes())
     f.write(struct.pack('<I', len(tris))); f.write(tris.astype('<u4').tobytes())
 print('body render verts', len(rv), 'tris', len(tris))
+# MakeHuman's own male genital piece (a hidden helper in the base mesh, CC0); shown only with adult anatomy on
+gkeep = np.array([g == 'helper-genital' for g in G])
+if gkeep.any():
+    grv, grt, gtris = unweld(F, gkeep)
+    guv = VT[grt]; guv[:, 1] = 1 - guv[:, 1]
+    with open(out('genitals.bin'), 'wb') as f:
+        f.write(struct.pack('<4sI', b'PHG1', len(grv))); f.write(grv.astype('<u4').tobytes()); f.write(guv.astype('<f4').tobytes())
+        f.write(struct.pack('<I', len(gtris))); f.write(gtris.astype('<u4').tobytes())
+    print('genital piece render verts', len(grv), 'tris', len(gtris))
 vg = json.load(open(os.path.join(DATA, 'mesh_metadata', 'basemesh_vertex_groups.json')))
 mirror = [int(l.split()[1]) for l in open(os.path.join(DATA, 'mesh_metadata', 'hm08.mirror')) if l.strip()] if os.path.exists(os.path.join(DATA, 'mesh_metadata', 'hm08.mirror')) else []
 
