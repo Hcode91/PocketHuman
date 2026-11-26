@@ -84,7 +84,8 @@ object PartBuilder {
             }
             val prefs = IntArray(rn * 3) { pm.refs[pm.renderMap[it / 3] * 3 + it % 3] }
             val prw = FloatArray(rn * 3) { pm.rw[pm.renderMap[it / 3] * 3 + it % 3] }
-            out.add(Part(id, p, weldedNormals(p, pm.tris, rn), pm.uv, pm.tris, vv.texture, vv.alpha, vv.normal, pj, pw, prefs, prw, 3))
+            val ptex = if (pm.info.kind == "anatomy") model.anatomyTexture(vv.texture, skin) else vv.texture
+            out.add(Part(id, p, weldedNormals(p, pm.tris, rn), pm.uv, pm.tris, ptex, vv.alpha, vv.normal, pj, pw, prefs, prw, 3))
         }
         return out
     }

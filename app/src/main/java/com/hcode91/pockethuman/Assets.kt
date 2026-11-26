@@ -171,6 +171,13 @@ class Library(val am: AssetSource, importRoot: java.io.File? = null) {
     val genitals: Triple<IntArray, FloatArray, IntArray>? = runCatching {
         val r = Bin(am.bytes("genitals.bin")); r.skip(4); val n = r.int(); val m = r.ints(n); val uv = r.floats(n * 2); val nt = r.int(); Triple(m, uv, r.ints(nt * 3))
     }.getOrNull()
+    /** Body vertices around the crotch (near MakeHuman's genital piece), for "is it covered by clothes?" checks. */
+    val crotchVerts: Set<Int> by lazy {
+        val g = genitals ?: return@lazy emptySet<Int>(); val v = base.verts
+        var cx = 0f; var cy = 0f; var cz = 0f; for (i in g.first) { cx += v[i * 3]; cy += v[i * 3 + 1]; cz += v[i * 3 + 2] }
+        val k = g.first.size.toFloat(); cx /= k; cy /= k; cz /= k
+        (0 until 13380).filter { val dx = v[it * 3] - cx; val dy = v[it * 3 + 1] - cy; val dz = v[it * 3 + 2] - cz; dx * dx + dy * dy + dz * dz < 0.8f * 0.8f }.toSet()
+    }
     val proxies = ArrayList<ProxyInfo>()
     val skins = ArrayList<Skin>()
     /** extra face shapes from imported packs (visemes etc.): target names */

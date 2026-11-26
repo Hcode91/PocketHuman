@@ -58,6 +58,29 @@ class GenitalDetail(bytes: ByteArray) {
     }
 
     companion object {
+        /**
+         * A copy of an anatomy piece's texture tinted to the body's skin tone (its average colour around the
+         * crotch), so pale or missing textures match. Returns its path, or null.
+         */
+        fun tintedToSkin(lib: Library, tex: String, skinTexture: String, filesDir: File, decoder: ImageDecoder, writer: ImageWriter): String? {
+            val name = "t_" + (tex + "_" + skinTexture).replace(Regex("[^A-Za-z0-9]"), "_").takeLast(100)
+            val dir = File(filesDir, "imported/anatomy_tints")
+            dir.listFiles()?.firstOrNull { it.nameWithoutExtension == name }?.let { return "imported/anatomy_tints/${it.name}" }
+            val (sw, sh, sp) = decoder.decode(lib.am.bytes(skinTexture)) ?: return null
+            // skin tone: the crotch of the main body island (same area as the painted detail), a little lighter to stand for skin, not shadow
+            val target = FloatArray(3); var n = 0
+            for (y in (1140 * sh / 2048) until (1290 * sh / 2048)) for (x in (735 * sw / 2048) until (830 * sw / 2048)) { val c = sp[y * sw + x]; for (k in 0..2) target[k] += ((c shr (16 - 8 * k)) and 255).toFloat(); n++ }
+            if (n == 0) return null; for (k in 0..2) target[k] /= n
+            val (w, h, px) = decoder.decode(lib.am.bytes(tex)) ?: return null
+            val mean = FloatArray(3); var m = 0
+            for (c in px) { if ((c ushr 24) < 128) continue; for (k in 0..2) mean[k] += ((c shr (16 - 8 * k)) and 255).toFloat(); m++ }
+            if (m == 0) return null; for (k in 0..2) mean[k] = (mean[k] / m).coerceAtLeast(1f)
+            val gain = FloatArray(3) { (target[it] / mean[it]).coerceIn(0.15f, 4f) }
+            for (i in px.indices) { val c = px[i]; var o = c and 0xff000000.toInt()
+                for (k in 0..2) o = o or ((((c shr (16 - 8 * k)) and 255) * gain[k]).toInt().coerceIn(0, 255) shl (16 - 8 * k)); px[i] = o }
+            return "imported/anatomy_tints/" + writer.write(px, w, h, dir, name)
+        }
+
         /** Makes (or reuses) a copy of a skin texture with the detail painted in. Returns its texture path, or null. */
         fun skinWithDetail(lib: Library, skinTexture: String, filesDir: File, decoder: ImageDecoder, writer: ImageWriter): String? {
             val name = "g_" + skinTexture.replace(Regex("[^A-Za-z0-9]"), "_").takeLast(80)

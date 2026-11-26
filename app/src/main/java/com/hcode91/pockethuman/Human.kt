@@ -23,6 +23,8 @@ class HumanState {
     var genitals = 0
     /** painted female genital detail on the skin (needs adult on): 0 = by gender, 1 = always, 2 = never */
     var genitalDetail = 0
+    /** tint anatomy pieces to the body's skin tone */
+    var anatomyTint = true
     val clothes = LinkedHashSet<String>()
     /** Expression shown in the app only; exports keep a neutral face plus every expression as a blend shape. */
     val expression = HashMap<String, Float>()
@@ -41,7 +43,7 @@ class HumanState {
         put("format", "pockethuman"); put("version", 1); put("name", name)
         put("macro", JSONObject(macro as Map<*, *>)); put("race", JSONObject(race as Map<*, *>)); put("details", JSONObject(details as Map<*, *>))
         put("skin", skin); put("eyeColour", eyeColour); put("eyebrows", eyebrows ?: ""); put("eyelashes", eyelashes ?: ""); put("hair", hair ?: "")
-        put("hairVariant", hairVariant); put("adult", adult); put("autoSkin", autoSkin); put("genitals", genitals); put("genitalDetail", genitalDetail)
+        put("hairVariant", hairVariant); put("adult", adult); put("autoSkin", autoSkin); put("genitals", genitals); put("genitalDetail", genitalDetail); put("anatomyTint", anatomyTint)
         put("clothes", org.json.JSONArray(clothes.toList()))
     }
     fun load(j: JSONObject) {
@@ -52,7 +54,7 @@ class HumanState {
         skin = j.optInt("skin", 0); eyeColour = j.optInt("eyeColour", 0); hairVariant = j.optInt("hairVariant", 0)
         eyebrows = j.optString("eyebrows").ifEmpty { null }; eyelashes = j.optString("eyelashes").ifEmpty { null }; hair = j.optString("hair").ifEmpty { null }
         name = j.optString("name", "Character")
-        adult = j.optBoolean("adult", false); autoSkin = j.optBoolean("autoSkin", true); genitals = j.optInt("genitals", 0); genitalDetail = j.optInt("genitalDetail", 0)
+        adult = j.optBoolean("adult", false); autoSkin = j.optBoolean("autoSkin", true); genitals = j.optInt("genitals", 0); genitalDetail = j.optInt("genitalDetail", 0); anatomyTint = j.optBoolean("anatomyTint", true)
         clothes.clear(); j.optJSONArray("clothes")?.let { a -> for (i in 0 until a.length()) clothes.add(a.getString(i)) }
         expression.clear()
     }
@@ -69,9 +71,15 @@ class HumanModel(val lib: Library) {
         if (!want) return skin.texture
         return runCatching { detailProvider?.invoke(lib, skin.texture) }.getOrNull() ?: skin.texture
     }
+    /** Texture for an anatomy piece: tinted to the skin unless the user turned that off. */
+    fun anatomyTexture(tex: String, skin: Skin): String =
+        if (!state.anatomyTint) tex else runCatching { tintProvider?.invoke(lib, tex, skin.texture) }.getOrNull() ?: tex
+
     companion object {
         /** Set by the app: makes/caches the skin copy with detail (needs image decoding, so it lives outside the model). */
         @Volatile var detailProvider: ((Library, String) -> String?)? = null
+        /** Set by the app: (library, piece texture, skin texture) -> tinted copy of the piece texture. */
+        @Volatile var tintProvider: ((Library, String, String) -> String?)? = null
     }
     /** Shape with the preview expression applied (what the app shows). */
     var verts = lib.base.verts.copyOf()
@@ -150,7 +158,14 @@ class HumanModel(val lib: Library) {
         state.eyelashes?.let { out.add(it to 0) }
         out.add("teeth_teeth_base" to 0); out.add("tongue_tongue01" to 0)
         state.hair?.let { out.add(it to state.hairVariant) }
-        lib.proxies.filter { it.kind == "clothes" && it.id in state.clothes }.sortedBy { it.zdepth }.forEach { out.add(it.id to 0) }
+        val worn = lib.proxies.filter { it.kind == "clothes" && it.id in state.clothes }
+        worn.sortedBy { it.zdepth }.forEach { out.add(it.id to 0) }
+        // anatomy pieces: adult only, and left off when clothes cover the crotch
+        if (state.adult) {
+            val crotch = lib.crotchVerts
+            val covered = worn.any { p -> p.delete.any { it in crotch } }
+            if (!covered) lib.proxies.filter { it.kind == "anatomy" && it.id in state.clothes }.forEach { out.add(it.id to 0) }
+        }
         return out.filter { p -> lib.proxies.any { it.id == p.first } }
     }
 

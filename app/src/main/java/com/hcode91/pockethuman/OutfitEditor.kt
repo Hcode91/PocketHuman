@@ -528,7 +528,7 @@ class OutfitDraft(val id: String, var name: String, val raw: RawMesh, shared: Li
             m.put("proxies", nw); mf.writeText(m.toString())
             File(dir, "proxies").listFiles()?.filter { it.name.startsWith(id) }?.forEach { it.delete() }
         }
-        // 1x1 grey PNG
-        val GREY_PNG: ByteArray = java.util.Base64.getDecoder().decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGO4fPkyAAWOAsUoXmAAAAAASUVORK5CYII=")
+        // 4x4 grey PNG
+        val GREY_PNG: ByteArray = java.util.Base64.getDecoder().decode("iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAFUlEQVR4XmPcsmULAwwwwVkMDHg4AGp8AiSGjGjAAAAAAElFTkSuQmCC")
     }
 }

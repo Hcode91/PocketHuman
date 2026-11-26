@@ -37,6 +37,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        HumanModel.tintProvider = { l, tex, skinTex -> synchronized(this) { GenitalDetail.tintedToSkin(l, tex, skinTex, filesDir, AndroidImageDecoder, AndroidImageWriter) } }
         HumanModel.detailProvider = { l, tex -> synchronized(this) { GenitalDetail.skinWithDetail(l, tex, filesDir, AndroidImageDecoder, AndroidImageWriter) } }
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val loading = TextView(this).apply { text = "Loading PocketHuman…"; setTextColor(fg); gravity = Gravity.CENTER; textSize = 18f }
@@ -194,6 +195,16 @@ class MainActivity : Activity() {
                     val gr = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
                     for ((label, v) in listOf("By gender" to 0, "Show" to 1, "Hide" to 2)) gr.addView(chip(label, s.genitals == v) { s.genitals = v; changed(); saveLast(); showTab("Body") })
                     content.addView(gr)
+                    header("Anatomy pieces (3D, from Community assets)")
+                    val anat = lib.proxies.filter { it.kind == "anatomy" }
+                    if (anat.isEmpty()) content.addView(TextView(this).apply { setTextColor(dim); textSize = 13f; text = "None yet. Get some in Packs → Community assets → Anatomy." })
+                    for (p in anat) content.addView(TextView(this).apply { val on = p.id in s.clothes
+                        text = (if (on) "☑  " else "☐  ") + p.label; textSize = 15f; setTextColor(if (on) accent else fg); setPadding(dp(4), dp(10), dp(4), dp(10))
+                        setOnClickListener { if (!s.clothes.remove(p.id)) s.clothes.add(p.id); changed(); saveLast(); showTab("Body") } })
+                    if (anat.isNotEmpty()) {
+                        switch("Tint anatomy pieces to the skin tone", s.anatomyTint) { s.anatomyTint = it; changed(); saveLast() }
+                        content.addView(TextView(this).apply { setTextColor(dim); textSize = 12f; text = "Pieces are hidden when clothes cover the crotch." })
+                    }
                     header("Female genital detail (painted onto any skin)")
                     val gd = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
                     for ((label, v) in listOf("By gender" to 0, "Show" to 1, "Hide" to 2)) gd.addView(chip(label, s.genitalDetail == v) { s.genitalDetail = v; changed(); saveLast(); showTab("Body") })
@@ -587,6 +598,7 @@ class MainActivity : Activity() {
     private fun packsTab() {
         content.addView(TextView(this).apply { setTextColor(dim); textSize = 12f; setPadding(0, dp(8), 0, dp(4))
             text = "Packs from the MakeHuman community. CC0 = free to use. CC-BY = free to use, but credit the author (the Save tab lists who to credit). Downloads come straight from makehumancommunity.org." })
+        button("Community assets: ${community.size} single items (clothes, hair, skins, shapes…)") { communityScreen() }
         button("Import a pack .zip from this phone") { startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "application/zip" }, REQ_PACK) }
         val have = lib.installed.associateBy { it.id }
         for (p in catalog) {
@@ -609,9 +621,132 @@ class MainActivity : Activity() {
                 } })
             content.addView(box)
         }
-        for (inst in lib.installed.filter { i -> catalog.none { it.getString("id") == i.id } }) {
+        for (inst in lib.installed.filter { i -> catalog.none { it.getString("id") == i.id } && !i.id.startsWith("community_") && !i.id.startsWith("my_") }) {
             content.addView(TextView(this).apply { text = "${inst.title} (imported)  ·  ${inst.counts}  ·  tap to remove"; setTextColor(fg); textSize = 14f; setPadding(dp(4), dp(10), dp(4), dp(10))
                 setOnClickListener { java.io.File(filesDir, "imported/${inst.id}").deleteRecursively(); reloadLibrary { showTab("Packs") } } })
+        }
+    }
+
+    // ------------------------------------------------------------------ community assets (single items from the old MakeHuman repository)
+    private val community: List<org.json.JSONObject> by lazy {
+        val a = org.json.JSONArray(String(assets.open("ph/community.json").use { it.readBytes() }))
+        (0 until a.length()).map { a.getJSONObject(it) }
+    }
+    private var commQuery = ""; private var commKind = "all"; private var commInstalled = false; private var commShown = 40
+    private val commKinds = listOf("all" to "All", "clothes" to "Clothes", "hair" to "Hair", "brows" to "Brows & lashes", "skin" to "Skins", "target" to "Shapes", "anatomy" to "Anatomy (18+)")
+
+    private fun fetchBytes(url: String): ByteArray {
+        var last: Exception? = null
+        for (u in listOf(url, url.replace("//files.makehumancommunity.org", "//files2.makehumancommunity.org"))) {
+            try {
+                val c = java.net.URL(u).openConnection() as java.net.HttpURLConnection
+                c.connectTimeout = 20000; c.readTimeout = 60000; c.instanceFollowRedirects = true
+                if (c.responseCode !in 200..299) error("HTTP ${c.responseCode}")
+                return c.inputStream.use { it.readBytes() }
+            } catch (e: Exception) { last = e }
+        }
+        throw last ?: IllegalStateException("download failed")
+    }
+
+    private fun commMatches(e: org.json.JSONObject): Boolean {
+        val s = model.state; val k = e.getString("k")
+        if (e.optInt("x") == 1 && !s.adult) return false
+        val kindOk = when (commKind) { "all" -> true; "brows" -> k == "eyebrows" || k == "eyelashes"; else -> k == commKind }
+        if (!kindOk) return false
+        if (commInstalled && !CommunityImporter.installed(filesDir, e.getInt("n"))) return false
+        if (commQuery.isNotBlank()) { val q = commQuery.lowercase(); if (!(e.getString("t").lowercase().contains(q) || e.optString("a").lowercase().contains(q) || e.optString("c").lowercase().contains(q))) return false }
+        return true
+    }
+
+    private fun communityScreen() {
+        content.removeAllViews()
+        button("‹ Back to packs") { showTab("Packs") }
+        content.addView(TextView(this).apply { setTextColor(dim); textSize = 12f; setPadding(0, dp(6), 0, dp(4))
+            text = "Single items shared by MakeHuman users, downloaded from makehumancommunity.org. CC0 = free to use. CC-BY = free to use, but credit the author (the Save tab lists who). Quality varies: some items may not fit or may look rough." +
+                (if (model.state.adult) "" else "\nTurn on Adult anatomy in the Body tab to see 18+ items.") })
+        content.addView(EditText(this).apply {
+            setText(commQuery); hint = "Search (name, author, category)"; setTextColor(fg); setHintTextColor(dim); isSingleLine = true
+            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
+            setOnEditorActionListener { v, _, _ -> commQuery = v.text.toString(); commShown = 40; communityScreen(); true }
+        })
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        for ((k, label) in commKinds) { if (k == "anatomy" && !model.state.adult) continue; row.addView(chip(label, commKind == k) { commKind = k; commShown = 40; communityScreen() }) }
+        row.addView(chip("Installed", commInstalled) { commInstalled = !commInstalled; commShown = 40; communityScreen() })
+        content.addView(HorizontalScrollView(this).apply { addView(row) })
+        val hits = community.filter { commMatches(it) }
+        header("${hits.size} items")
+        for (e in hits.take(commShown)) {
+            val n = e.getInt("n"); val inst = CommunityImporter.installed(filesDir, n)
+            val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(4), dp(9), dp(4), dp(9)); setOnClickListener { communityDetail(e) } }
+            box.addView(TextView(this).apply { text = (if (inst) "✓ " else "") + e.getString("t"); setTextColor(if (inst) accent else fg); textSize = 15f })
+            box.addView(TextView(this).apply { setTextColor(dim); textSize = 12f
+                text = listOf(e.optString("c").ifEmpty { e.getString("k") }, e.optString("a"), e.optString("l"), e.optString("d").take(4)).filter { it.isNotEmpty() }.joinToString("  ·  ") })
+            content.addView(box)
+        }
+        if (hits.size > commShown) button("Show more") { commShown += 60; communityScreen() }
+    }
+
+    private fun communityDetail(e: org.json.JSONObject) {
+        val n = e.getInt("n"); val inst = CommunityImporter.installed(filesDir, n)
+        val v = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(10), dp(20), dp(4)) }
+        val img = android.widget.ImageView(this).apply { adjustViewBounds = true; maxHeight = dp(260) }
+        v.addView(img, LinearLayout.LayoutParams(-1, -2))
+        v.addView(TextView(this).apply { setTextColor(fg); textSize = 13f; setPadding(0, dp(8), 0, 0)
+            text = "By ${e.optString("a").ifEmpty { "unknown" }}  ·  ${e.optString("l")}  ·  ${e.optString("c").ifEmpty { e.getString("k") }}  ·  ${e.optString("d")}\n\n${e.optString("s")}" +
+                (if (e.optString("l") == "CC-BY") "\n\nCC-BY: credit ${e.optString("a")} if you use this in your game." else "") })
+        val d = AlertDialog.Builder(this).setTitle(e.getString("t")).setView(android.widget.ScrollView(this).apply { addView(v) })
+            .setNegativeButton("Close", null)
+        if (inst) d.setPositiveButton("Remove") { _, _ -> removeCommunity(n) } else d.setPositiveButton("Download") { _, _ -> installCommunity(e) }
+        d.show()
+        e.getJSONObject("f").optString("render").ifEmpty { e.getJSONObject("f").optString("thumb") }.takeIf { it.isNotEmpty() }?.let { url ->
+            worker.execute { val bmp = runCatching { val b = fetchBytes(url.replace(" ", "%20")); android.graphics.BitmapFactory.decodeByteArray(b, 0, b.size, android.graphics.BitmapFactory.Options().apply { inSampleSize = 2 }) }.getOrNull()
+                runOnUiThread { if (bmp != null) img.setImageBitmap(bmp) } }
+        }
+    }
+
+    private fun installCommunity(e: org.json.JSONObject) {
+        val n = e.getInt("n"); val k = e.getString("k")
+        val msg = TextView(this).apply { setTextColor(fg); setPadding(dp(20), dp(10), dp(20), dp(10)); text = "Starting…" }
+        val dlg = AlertDialog.Builder(this).setTitle(e.getString("t")).setView(msg).setCancelable(false).show()
+        worker.execute {
+            val r = runCatching { CommunityImporter(filesDir, AndroidTextures) { fetchBytes(it) }.install(e) { t -> runOnUiThread { msg.text = t } } }
+            val keep = model.state.toJson()
+            if (r.isSuccess) { lib = makeLibrary(); model = HumanModel(lib); model.state.load(keep) }
+            // put the new item on, so it's visible straight away
+            val s = model.state; val pid = lib.proxies.firstOrNull { it.id.startsWith(CommunityImporter.packId(n) + "_") }?.id
+            var where = ""
+            if (r.isSuccess) when (k) {
+                "clothes", "anatomy" -> { if (pid != null) s.clothes.add(pid); where = if (k == "anatomy") "Body tab → Anatomy" else "Clothes tab" }
+                "hair" -> { s.hair = pid; s.hairVariant = 0; where = "Hair tab" }
+                "eyebrows" -> { s.eyebrows = pid; where = "Hair tab" }
+                "eyelashes" -> { s.eyelashes = pid; where = "Hair tab" }
+                "skin" -> { val i = lib.skins.indexOfFirst { it.texture.startsWith("imported/${CommunityImporter.packId(n)}/") }; if (i >= 0) { s.skin = i; s.autoSkin = false }; where = "Skin tab" }
+                "target" -> where = "Details tab"
+            }
+            model.rebuild(); val parts = PartBuilder.build(model, false)
+            runOnUiThread {
+                dlg.dismiss(); view3d.reload(lib); view3d.show(parts); updateInfo(); saveLast()
+                r.onSuccess { toast("Installed. It's in the $where.") }
+                 .onFailure { AlertDialog.Builder(this).setTitle("Couldn't install").setMessage(it.message ?: it.toString()).setPositiveButton("OK", null).show() }
+                communityScreen()
+            }
+        }
+    }
+
+    private fun removeCommunity(n: Int) {
+        val prefix = CommunityImporter.packId(n) + "_"; val s = model.state
+        val skinTex = lib.skins.getOrNull(s.skin)?.texture
+        s.clothes.removeAll { it.startsWith(prefix) }
+        if (s.hair?.startsWith(prefix) == true) s.hair = null
+        if (s.eyebrows?.startsWith(prefix) == true) s.eyebrows = "eyebrows_eyebrow001"
+        if (s.eyelashes?.startsWith(prefix) == true) s.eyelashes = "eyelashes_eyelashes01"
+        s.details.keys.removeAll { it.startsWith(CommunityImporter.packId(n) + "/") }
+        CommunityImporter.remove(filesDir, n)
+        worker.execute {
+            val keep = s.toJson(); lib = makeLibrary(); model = HumanModel(lib); model.state.load(keep)
+            val i = lib.skins.indexOfFirst { it.texture == skinTex }; if (i >= 0) model.state.skin = i else { model.state.autoSkin = true; model.state.skin = model.matchSkin() }
+            model.rebuild(); val parts = PartBuilder.build(model, false)
+            runOnUiThread { view3d.reload(lib); view3d.show(parts); updateInfo(); saveLast(); communityScreen() }
         }
     }
 

@@ -40,7 +40,7 @@ class PackImporter(private val filesDir: File, private val textures: TextureSink
         } finally { tmp.deleteRecursively() }
     }
 
-    private fun convert(root: File, out: File, packId: String, title: String, packLicense: String, progress: (String) -> Unit): Result {
+    internal fun convert(root: File, out: File, packId: String, title: String, packLicense: String, progress: (String) -> Unit): Result {
         // per-asset metadata (author, licence) from packs/*.json
         val meta = HashMap<String, JSONObject>()
         root.resolve("packs").listFiles()?.filter { it.name.endsWith(".json") }?.forEach { f ->
@@ -56,7 +56,7 @@ class PackImporter(private val filesDir: File, private val textures: TextureSink
         File(out, "proxies").mkdirs(); File(out, "skins").mkdirs()
 
         // ---- meshes: clothes/, hair/, eyebrows/, eyelashes/
-        for (kindDir in listOf("clothes", "hair", "eyebrows", "eyelashes")) {
+        for (kindDir in listOf("clothes", "hair", "eyebrows", "eyelashes", "anatomy")) {
             val dirs = root.resolve(kindDir).listFiles()?.filter { it.isDirectory }?.sortedBy { it.name } ?: continue
             for (d in dirs) {
                 val name = d.name
@@ -77,7 +77,7 @@ class PackImporter(private val filesDir: File, private val textures: TextureSink
                         val m = Mhclo.mhmat(mp)
                         val diff = m["diffuseTexture"]?.let { File(d, it.substringAfterLast('/')) }?.takeIf { it.exists() } ?: continue
                         val vname = mp.nameWithoutExtension
-                        val tex = textures.write(diff, File(out, "proxies"), "${id}_$vname", if (kindDir == "clothes" || kindDir == "hair") 1024 else 512) ?: continue
+                        val tex = textures.write(diff, File(out, "proxies"), "${id}_$vname", if (kindDir == "clothes" || kindDir == "hair" || kindDir == "anatomy") 1024 else 512) ?: continue
                         val v = JSONObject().put("name", vname.replace('_', ' ')).put("texture", "imported/$packId/proxies/$tex").put("alpha", tex.endsWith(".png"))
                         m["normalmapTexture"]?.let { File(d, it.substringAfterLast('/')) }?.takeIf { it.exists() }?.let { nf ->
                             textures.write(nf, File(out, "proxies"), "${id}_${vname}_normal", 1024)?.let { v.put("normal", "imported/$packId/proxies/$it") }
@@ -163,11 +163,11 @@ class PackImporter(private val filesDir: File, private val textures: TextureSink
     }
 
     private fun proxyBin(info: Mhclo, n: Int, rmap: IntArray, ruv: FloatArray, tris: IntArray): ByteArray {
-        val bb = ByteBuffer.allocate(8 + n * 6 + n * 12 + n * 12 + 36 + 4 + rmap.size * 2 + ruv.size * 4 + 4 + tris.size * 4).order(ByteOrder.LITTLE_ENDIAN)
-        bb.put("PHP1".toByteArray()).putInt(n)
+        val bb = ByteBuffer.allocate(8 + n * 6 + n * 12 + n * 12 + 36 + 4 + rmap.size * 4 + ruv.size * 4 + 4 + tris.size * 4).order(ByteOrder.LITTLE_ENDIAN)
+        bb.put("PHP2".toByteArray()).putInt(n)
         info.refs.forEach { bb.putShort(it.toShort()) }; info.w.forEach { bb.putFloat(it) }; info.off.forEach { bb.putFloat(it) }
         for (k in 0..2) bb.putInt(info.scaleA[k]); for (k in 0..2) bb.putFloat(info.scaleRef[k]); for (k in 0..2) bb.putInt(info.scaleB[k])
-        bb.putInt(rmap.size); rmap.forEach { bb.putShort(it.toShort()) }; ruv.forEach { bb.putFloat(it) }
+        bb.putInt(rmap.size); rmap.forEach { bb.putInt(it) }; ruv.forEach { bb.putFloat(it) }
         bb.putInt(tris.size / 3); tris.forEach { bb.putInt(it) }
         return bb.array()
     }
@@ -287,5 +287,67 @@ object ObjReader {
             for (j in 1 until ids.size - 1) { tris.add(ids[0]); tris.add(ids[j]); tris.add(ids[j + 1]) }
         }
         return Triple(rmap.toIntArray(), uv.toFloatArray(), tris.toIntArray())
+    }
+}
+
+
+/**
+ * Installs single assets from the MakeHuman community repository (assets/ph/community.json entries).
+ * Downloads the asset's files, lays them out like an asset pack and runs the pack converter, so each
+ * asset becomes its own small pack: filesDir/imported/community_<nid>/.
+ */
+class CommunityImporter(private val filesDir: File, private val textures: TextureSink, private val fetch: (String) -> ByteArray) {
+    companion object {
+        fun packId(n: Int) = "community_$n"
+        fun installed(filesDir: File, n: Int) = File(filesDir, "imported/${packId(n)}/manifest.json").exists()
+        fun remove(filesDir: File, n: Int) = File(filesDir, "imported/${packId(n)}").deleteRecursively()
+        private fun base(url: String) = java.net.URLDecoder.decode(url.substringAfterLast('/').substringBefore('?'), "UTF-8").replace(Regex("[^A-Za-z0-9._-]"), "_")
+    }
+
+    fun install(e: JSONObject, progress: (String) -> Unit = {}): PackImporter.Result {
+        val n = e.getInt("n"); val title = e.getString("t"); val kind = e.getString("k"); val f = e.getJSONObject("f")
+        val slug = title.lowercase().replace(Regex("[^a-z0-9]+"), "_").trim('_').take(40).ifEmpty { "asset$n" }
+        val root = File(filesDir, "import_tmp/community_$n").apply { deleteRecursively(); mkdirs() }
+        try {
+            val dir = when (kind) { "skin" -> File(root, "skins/$slug"); "target" -> File(root, "targets/$slug"); else -> File(root, "$kind/$slug") }.apply { mkdirs() }
+            val got = HashMap<String, File>()
+            val keys = f.keys().asSequence().filter { it != "render" && it != "thumb" }.toList()
+            keys.forEachIndexed { i, k ->
+                val url = f.getString(k).replace(" ", "%20"); progress("Downloading ${i + 1} of ${keys.size}…")
+                val file = File(dir, base(url)); file.writeBytes(fetch(url)); got[k] = file
+            }
+            // the repository renames uploads, so point the files at each other by their downloaded names
+            got["mhmat"]?.let { mm ->
+                var hasTex = false
+                val lines = mm.readLines().map { l ->
+                    val key = l.trim().substringBefore(' ')
+                    when {
+                        key == "diffuseTexture" && got["diffuse"] != null -> { hasTex = true; "diffuseTexture ${got["diffuse"]!!.name}" }
+                        key == "normalmapTexture" && got["normals"] != null -> "normalmapTexture ${got["normals"]!!.name}"
+                        key == "diffuseTexture" -> { val t = File(dir, "no_texture.png"); t.writeBytes(OutfitDraft.GREY_PNG); hasTex = true; "diffuseTexture ${t.name}" }
+                        key == "normalmapTexture" -> ""
+                        else -> l
+                    }
+                }.toMutableList()
+                if (!hasTex) { val t = File(dir, "grey.png"); t.writeBytes(got["diffuse"]?.readBytes() ?: OutfitDraft.GREY_PNG); lines.add("diffuseTexture ${t.name}") }
+                mm.writeText(lines.joinToString("\n"))
+            }
+            got["mhclo"]?.let { mc ->
+                mc.writeText(mc.readLines().joinToString("\n") { l ->
+                    when (l.trim().substringBefore(' ')) {
+                        "obj_file" -> "obj_file ${got["obj"]!!.name}"
+                        "material" -> "material ${got["mhmat"]!!.name}"
+                        else -> l
+                    }
+                })
+            }
+            // pack-style metadata for credits and labels
+            File(root, "packs").mkdirs()
+            File(root, "packs/meta.json").writeText(JSONObject().put(slug, JSONObject().put("author", e.optString("a")).put("license", e.optString("l"))
+                .put("name", title).put("category", e.optString("c"))).toString())
+            val out = File(filesDir, "imported/${packId(n)}").apply { deleteRecursively(); mkdirs() }
+            progress("Converting…")
+            return PackImporter(filesDir, textures).convert(root, out, packId(n), title, e.optString("l"), progress)
+        } finally { root.deleteRecursively() }
     }
 }

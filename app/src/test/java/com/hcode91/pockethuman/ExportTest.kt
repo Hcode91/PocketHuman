@@ -244,3 +244,40 @@ class GenitalDetailTest {
         HumanModel.detailProvider = null
     }
 }
+
+class CommunityTest {
+    @Test fun installsAssets() {
+        val tmp = java.nio.file.Files.createTempDirectory("phcm").toFile()
+        val copy = TextureSink { s, dir, base, _ -> dir.mkdirs(); val n = base + "." + s.extension.lowercase(); s.copyTo(File(dir, n), true); n }
+        val fetch: (String) -> ByteArray = { u -> try { java.net.URL(u).openStream().use { it.readBytes() } } catch (e: Exception) { throw RuntimeException("download failed: $u ($e)") } }
+        val all = org.json.JSONArray(File("src/main/assets/ph/community.json").readText())
+        val byN = (0 until all.length()).associate { all.getJSONObject(it).let { e -> e.getInt("n") to e } }
+        val imp = CommunityImporter(tmp, copy, fetch)
+        for (n in listOf(3167, 3223, 2892, 3673, 3605, 3728, 2621)) {
+            val e = byN[n] ?: continue
+            val r = runCatching { imp.install(e) { } }
+            println("community ${e.getString("k")} '${e.getString("t")}' (${e.getString("l")}): " + r.fold({ "ok ${it.counts} skipped ${it.skipped}" }, { "FAILED ${it.message}" }))
+        }
+        val srcOf = AssetSource { p -> if (p.startsWith("imported/")) File(tmp, p).readBytes() else File("src/main/assets/ph", p).readBytes() }
+        val lib = Library(srcOf, tmp)
+        println("anatomy proxies: " + lib.proxies.filter { it.kind == "anatomy" }.map { it.id })
+        // tests have no image decoder on the classpath: let python/PIL turn the image into raw ARGB
+        val dec = ImageDecoder { b -> val inF = File.createTempFile("img", ".bin").apply { writeBytes(b) }; val outF = File.createTempFile("img", ".raw")
+            ProcessBuilder("python3", "-c", "import sys,struct;from PIL import Image;im=Image.open(sys.argv[1]).convert('RGBA');w,h=im.size;open(sys.argv[2],'wb').write(struct.pack('<II',w,h)+im.tobytes())", inF.path, outF.path).inheritIO().start().waitFor()
+            val r = outF.readBytes(); if (r.size < 8) null else { val bb = java.nio.ByteBuffer.wrap(r).order(java.nio.ByteOrder.LITTLE_ENDIAN); val w = bb.int; val h = bb.int
+                Triple(w, h, IntArray(w * h) { i -> val o = 8 + i * 4; ((r[o + 3].toInt() and 255) shl 24) or ((r[o].toInt() and 255) shl 16) or ((r[o + 1].toInt() and 255) shl 8) or (r[o + 2].toInt() and 255) }) } }
+        val ct = CharacterTest()
+        val writer = ImageWriter { a, w, h, dir, base -> dir.mkdirs(); File(dir, "$base.png").writeBytes(ct.png(a, w, h)); "$base.png" }
+        HumanModel.tintProvider = { l, t, sk -> GenitalDetail.tintedToSkin(l, t, sk, tmp, dec, writer) }
+        val m = HumanModel(lib); m.state.macro["gender"] = 0f; m.state.adult = true; m.state.hair = lib.proxies.firstOrNull { it.id.startsWith("community_2892") }?.id
+        m.state.clothes.add("community_3167_anatomy_realisticlabiamedium"); m.rebuild()
+        println("parts: " + PartBuilder.build(m, false).map { it.name })
+        File(System.getProperty("java.io.tmpdir"), "ph_comm_f.glb").outputStream().use { GlbExporter.write(m, it) }
+        val mm = HumanModel(lib); mm.state.macro["gender"] = 1f; mm.state.adult = true; mm.state.genitals = 2; mm.state.clothes.add("community_3223_anatomy_man_genital"); mm.rebuild()
+        println("male parts: " + PartBuilder.build(mm, false).map { it.name })
+        File(System.getProperty("java.io.tmpdir"), "ph_comm_m.glb").outputStream().use { GlbExporter.write(mm, it) }
+        mm.state.clothes.add("clothes_male_casualsuit01"); mm.rebuild()
+        println("male dressed parts: " + PartBuilder.build(mm, false).map { it.name })
+        HumanModel.tintProvider = null
+    }
+}
