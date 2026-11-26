@@ -82,3 +82,80 @@ class OutfitTest {
         val back = OutfitDraft.loadSaved(tmp, "test1"); println("reloaded for editing: ${back?.name} armL=${back?.p?.get("armL")}")
     }
 }
+
+class CharacterTest {
+    private fun png(argb: IntArray, w: Int, h: Int): ByteArray {
+        val raw = java.io.ByteArrayOutputStream()
+        for (y in 0 until h) { raw.write(0); for (x in 0 until w) { val c = argb[y * w + x]; raw.write((c shr 16) and 0xff); raw.write((c shr 8) and 0xff); raw.write(c and 0xff) } }
+        val z = java.io.ByteArrayOutputStream(); java.util.zip.DeflaterOutputStream(z).use { it.write(raw.toByteArray()) }
+        val out = java.io.ByteArrayOutputStream()
+        fun chunk(t: String, d: ByteArray) { val crc = java.util.zip.CRC32(); crc.update(t.toByteArray()); crc.update(d)
+            out.write(java.nio.ByteBuffer.allocate(4).putInt(d.size).array()); out.write(t.toByteArray()); out.write(d); out.write(java.nio.ByteBuffer.allocate(4).putInt(crc.value.toInt()).array()) }
+        out.write(byteArrayOf(-119, 80, 78, 71, 13, 10, 26, 10))
+        chunk("IHDR", java.nio.ByteBuffer.allocate(13).putInt(w).putInt(h).put(8).put(2).put(0).put(0).put(0).array())
+        chunk("IDAT", z.toByteArray()); chunk("IEND", ByteArray(0)); return out.toByteArray()
+    }
+    @Test fun makesCharacterFromModel() {
+        val src = File("/home/claude/meshy_in/baked.glb"); if (!src.exists()) { println("no test model"); return }
+        val tmp = java.nio.file.Files.createTempDirectory("phc").toFile()
+        val copy = TextureSink { s, dir, base, _ -> dir.mkdirs(); val n = base + "." + s.extension.lowercase(); s.copyTo(File(dir, n), true); n }
+        val writer = ImageWriter { a, w, h, dir, base -> dir.mkdirs(); File(dir, "$base.png").writeBytes(png(a, w, h)); "$base.png" }
+        val srcOf = AssetSource { p -> if (p.startsWith("imported/")) File(tmp, p).readBytes() else File("src/main/assets/ph", p).readBytes() }
+        var lib = Library(srcOf, tmp); var m = HumanModel(lib); m.state.hair = null; m.rebuild()
+        val raw = MeshIO.simplify(MeshIO.load(src), 60000)
+        val rgb = File("/tmp/tex1024.rgb").readBytes()
+        val colors = ColorSampler { u, v -> val x = (u.coerceIn(0f, 0.9999f) * 1024).toInt(); val y = (v.coerceIn(0f, 0.9999f) * 1024).toInt(); val o = (y * 1024 + x) * 3
+            ((rgb[o].toInt() and 0xff) shl 16) or ((rgb[o + 1].toInt() and 0xff) shl 8) or (rgb[o + 2].toInt() and 0xff) }
+        val baseSkin = ColorSampler { _, _ -> 0xC89078 }
+        val d = OutfitDraft("t", "Akari", raw); d.autoPlace(BodyQuery(m))
+        val t0 = System.currentTimeMillis()
+        val aligned = d.alignedOnly(m, BodyQuery(m))
+        val skin = CharacterImport.skinMask(raw, colors); println("skin verts ${skin.count { it }} of ${raw.nv}")
+        val delta = CharacterImport.shapeDelta(m, aligned.pos, raw, skin) {}
+        var mx = 0f; for (x in delta) mx = maxOf(mx, Math.abs(x)); println("shape: max offset ${mx * 10} cm, ms ${System.currentTimeMillis() - t0}")
+        val sid = CharacterImport.saveShape(tmp, "Akari", delta)
+        var keep = m.state.toJson(); lib = Library(srcOf, tmp); m = HumanModel(lib); m.state.load(keep); m.state.details[sid] = 1f; m.rebuild()
+        val t1 = System.currentTimeMillis()
+        val path = CharacterImport.projectSkin(m, aligned.pos, raw, skin, colors, baseSkin, 1024, tmp, "Akari", writer) {}
+        println("skin painted in ${System.currentTimeMillis() - t1} ms -> $path")
+        keep = m.state.toJson(); lib = Library(srcOf, tmp); m = HumanModel(lib); m.state.load(keep)
+        m.state.skin = lib.skins.indexOfFirst { it.texture == path }; m.state.autoSkin = false; m.rebuild()
+        val o = OutfitDraft("c1", "Akari outfit", raw, LinkedHashMap(d.p)).also { it.autoScale = d.autoScale; it.autoShift = d.autoShift.copyOf(); it.p["skinCut"] = 0.6f }
+        val b1 = BodyQuery(m); o.bake(m, b1, o.compute(m, b1, colors), tmp, copy)
+        keep = m.state.toJson(); lib = Library(srcOf, tmp); m = HumanModel(lib); m.state.load(keep); m.state.clothes.add("my_c1"); m.rebuild()
+        File(System.getProperty("java.io.tmpdir"), "ph_character.glb").outputStream().use { GlbExporter.write(m, it) }
+        m.state.clothes.clear(); m.rebuild()
+        File(System.getProperty("java.io.tmpdir"), "ph_character_bare.glb").outputStream().use { GlbExporter.write(m, it) }
+        val b2 = BodyQuery(m); val f2 = d.alignedOnly(m, b2); val (part, tex) = AsIsExport.part(m, b2, d, f2)
+        File(System.getProperty("java.io.tmpdir"), "ph_asis.glb").outputStream().use { GlbExporter.write(m, it, listOf(part), tex) }
+        println("character done")
+    }
+}
+
+class TankTopTest {
+    @Test fun fitsTankTop() {
+        val src = File("/mnt/user-data/uploads/Meshy_AI_Black_Racerback_Tank_Top_20261026_texture.obj"); if (!src.exists()) { println("no tank top"); return }
+        val tmp = java.nio.file.Files.createTempDirectory("pht").toFile()
+        val copy = TextureSink { s, dir, base, _ -> dir.mkdirs(); val n = base + "." + s.extension.lowercase(); s.copyTo(File(dir, n), true); n }
+        val srcOf = AssetSource { p -> if (p.startsWith("imported/")) File(tmp, p).readBytes() else File("src/main/assets/ph", p).readBytes() }
+        var lib = Library(srcOf, tmp); var m = HumanModel(lib); m.state.hair = null; m.rebuild()
+        val t0 = System.currentTimeMillis()
+        var raw = MeshIO.load(src, File("/mnt/user-data/uploads/d015f3f7-image.webp"))
+        println("tank top loaded ${raw.nv} verts ${raw.tris.size / 3} tris in ${System.currentTimeMillis() - t0} ms")
+        val t1 = System.currentTimeMillis(); raw = MeshIO.simplify(raw, 60000); println("simplified to ${raw.tris.size / 3} in ${System.currentTimeMillis() - t1} ms")
+        val d = OutfitDraft("tank", "Tank top", raw); d.p["kind"] = 1f; val body = BodyQuery(m)
+        val t2 = System.currentTimeMillis(); d.autoFit(body); println("auto-fit ${System.currentTimeMillis() - t2} ms scale ${d.autoScale} shift ${d.autoShift.toList()}")
+        // a test brush stroke: shrinkwrap at the front
+        d.strokes.add(OutfitDraft.Stroke(OutfitDraft.SHRINK, floatArrayOf(0f, 3f, 1.2f), 1.2f, FloatArray(3), 0.5f))
+        val f = d.compute(m, body, null)
+        fun inside(pos: FloatArray, q: BodyQuery): Int { var c = 0; for (i in 0 until pos.size / 3) { val h = q.nearest(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]) ?: continue; if (h.dist > 1.5f) continue
+            val nn = q.normalAt(h); if ((pos[i * 3] - h.x) * nn[0] + (pos[i * 3 + 1] - h.y) * nn[1] + (pos[i * 3 + 2] - h.z) * nn[2] < 0) c++ }; return c }
+        println("tank inside after compute: ${inside(f.pos, body)} of ${f.pos.size / 3}")
+        d.bake(m, body, f, tmp, copy)
+        lib = Library(srcOf, tmp); val m2 = HumanModel(lib); m2.state.load(m.state.toJson()); m2.state.clothes.add("my_tank"); m2.rebuild()
+        val fp = m2.lib.proxy("my_tank").fit(m2.verts)
+        println("tank inside after bake: ${inside(fp, BodyQuery(m2))} of ${fp.size / 3}")
+        File(System.getProperty("java.io.tmpdir"), "ph_tank.glb").outputStream().use { GlbExporter.write(m2, it) }
+        File(System.getProperty("java.io.tmpdir"), "ph_tank_only.glb").outputStream().use { GlbExporter.write(m2, it, PartBuilder.build(m2, true).filter { it.name.startsWith("my_") }) }
+    }
+}

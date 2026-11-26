@@ -247,20 +247,30 @@ class Mhclo {
 object ObjReader {
     /** positions, texcoords, faces as list of (v, vt) corner arrays */
     fun read(f: File): Triple<FloatArray, FloatArray, List<IntArray>> {
-        val v = ArrayList<Float>(); val vt = ArrayList<Float>(); val faces = ArrayList<IntArray>()
-        f.forEachLine { l ->
-            when {
-                l.startsWith("v ") -> l.substring(2).trim().split(Regex("\\s+")).take(3).forEach { v.add(it.toFloat()) }
-                l.startsWith("vt ") -> l.substring(3).trim().split(Regex("\\s+")).take(2).forEach { vt.add(it.toFloat()) }
-                l.startsWith("f ") -> {
-                    val c = l.substring(2).trim().split(Regex("\\s+"))
-                    val a = IntArray(c.size * 2)
-                    c.forEachIndexed { i, s -> val p = s.split('/'); a[i * 2] = p[0].toInt() - 1; a[i * 2 + 1] = if (p.size > 1 && p[1].isNotEmpty()) p[1].toInt() - 1 else -1 }
-                    faces.add(a)
+        var v = FloatArray(1 shl 16); var nv = 0; var vt = FloatArray(1 shl 16); var nt = 0
+        val faces = ArrayList<IntArray>()
+        fun pf(s: String, a: Int, b: Int) = java.lang.Float.parseFloat(s.substring(a, b))
+        f.bufferedReader(Charsets.ISO_8859_1, 1 shl 16).forEachLine { l ->
+            if (l.length < 3) return@forEachLine
+            if (l[0] == 'v' && (l[1] == ' ' || l[1] == 't')) {
+                val isT = l[1] == 't'; var i = if (isT) 3 else 2; var k = 0; val want = if (isT) 2 else 3
+                if (isT) { if (nt + 2 > vt.size) vt = vt.copyOf(vt.size * 2) } else { if (nv + 3 > v.size) v = v.copyOf(v.size * 2) }
+                while (k < want && i < l.length) {
+                    while (i < l.length && l[i] == ' ') i++
+                    var j = i; while (j < l.length && l[j] != ' ') j++
+                    if (j > i) { val x = pf(l, i, j); if (isT) vt[nt++] = x else v[nv++] = x; k++ }
+                    i = j
                 }
+            } else if (l[0] == 'f' && l[1] == ' ') {
+                val c = l.substring(2).trim().split(' ').filter { it.isNotEmpty() }
+                val a = IntArray(c.size * 2)
+                c.forEachIndexed { i, s -> val sl = s.indexOf('/'); if (sl < 0) { a[i * 2] = s.toInt() - 1; a[i * 2 + 1] = -1 } else {
+                    a[i * 2] = s.substring(0, sl).toInt() - 1; val s2 = s.indexOf('/', sl + 1); val t = if (s2 < 0) s.substring(sl + 1) else s.substring(sl + 1, s2)
+                    a[i * 2 + 1] = if (t.isEmpty()) -1 else t.toInt() - 1 } }
+                faces.add(a)
             }
         }
-        return Triple(v.toFloatArray(), vt.toFloatArray(), faces)
+        return Triple(v.copyOf(nv), vt.copyOf(nt), faces)
     }
     /** render vertices (unique v/vt pairs) -> (map to obj vertex, uv with top-left origin, triangles) */
     fun unweld(nv: Int, vt: FloatArray, faces: List<IntArray>): Triple<IntArray, FloatArray, IntArray> {

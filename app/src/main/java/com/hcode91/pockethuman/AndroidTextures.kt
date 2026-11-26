@@ -30,3 +30,22 @@ object AndroidTextures : TextureSink {
         return name
     }
 }
+
+/** Colour lookups on a decoded image (downsampled to keep memory sensible). */
+fun bitmapSampler(bytes: ByteArray, maxSize: Int = 2048): ColorSampler? {
+    val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }; BitmapFactory.decodeByteArray(bytes, 0, bytes.size, o)
+    var s = 1; while (maxOf(o.outWidth, o.outHeight) / (s * 2) >= maxSize) s *= 2
+    val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = s }) ?: return null
+    val w = bmp.width; val h = bmp.height; val px = IntArray(w * h); bmp.getPixels(px, 0, w, 0, 0, w, h); bmp.recycle()
+    return ColorSampler { u, v -> px[(v.coerceIn(0f, 0.9999f) * h).toInt() * w + (u.coerceIn(0f, 0.9999f) * w).toInt()] }
+}
+
+object AndroidImageWriter : ImageWriter {
+    override fun write(argb: IntArray, w: Int, h: Int, dir: File, baseName: String): String {
+        dir.mkdirs()
+        val bmp = Bitmap.createBitmap(argb, w, h, Bitmap.Config.ARGB_8888)
+        val name = "$baseName.jpg"
+        File(dir, name).outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 90, it) }
+        bmp.recycle(); return name
+    }
+}

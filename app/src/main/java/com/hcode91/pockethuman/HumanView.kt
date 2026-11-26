@@ -29,6 +29,28 @@ class HumanView(ctx: Context, private var lib: Library) : GLSurfaceView(ctx) {
     }
 
     fun reload(l: Library) { lib = l }
+
+    /** When set, one-finger drags go to the brush (two fingers still turn/zoom the camera). */
+    interface Brush { fun down(x: Float, y: Float): Boolean; fun move(x: Float, y: Float); fun up() }
+    var brush: Brush? = null
+    private var brushing = false
+
+    /** Same camera as the renderer, for picking: returns proj*view. */
+    fun viewProj(): FloatArray {
+        val proj = FloatArray(16); val view = FloatArray(16); val out = FloatArray(16)
+        Matrix.perspectiveM(proj, 0, 35f, width.toFloat() / height.coerceAtLeast(1), 0.5f, 400f)
+        val yr = Math.toRadians(yaw.toDouble()); val pr = Math.toRadians(pitch.toDouble())
+        val ex = (dist * Math.sin(yr) * Math.cos(pr)).toFloat(); val ez = (dist * Math.cos(yr) * Math.cos(pr)).toFloat(); val ey = targetY + (dist * Math.sin(pr)).toFloat()
+        Matrix.setLookAtM(view, 0, ex, ey, ez, 0f, targetY, 0f, 0f, 1f, 0f)
+        Matrix.multiplyMM(out, 0, proj, 0, view, 0); return out
+    }
+    /** Screen point -> world point at a given normalised depth (-1 near .. 1 far). */
+    fun unproject(x: Float, y: Float, ndcZ: Float): FloatArray {
+        val inv = FloatArray(16); Matrix.invertM(inv, 0, viewProj(), 0)
+        val p = floatArrayOf(2f * x / width - 1f, 1f - 2f * y / height, ndcZ, 1f); val o = FloatArray(4)
+        Matrix.multiplyMV(o, 0, inv, 0, p, 0); return floatArrayOf(o[0] / o[3], o[1] / o[3], o[2] / o[3])
+    }
+    fun ndcDepth(w: FloatArray): Float { val o = FloatArray(4); Matrix.multiplyMV(o, 0, viewProj(), 0, floatArrayOf(w[0], w[1], w[2], 1f), 0); return o[2] / o[3] }
     fun show(parts: List<Part>) { queueEvent { r.pending = parts }; requestRender() }
 
     private val scale = ScaleGestureDetector(ctx, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
@@ -43,6 +65,17 @@ class HumanView(ctx: Context, private var lib: Library) : GLSurfaceView(ctx) {
     })
     private var lx = 0f; private var ly = 0f; private var lastCount = 0
     override fun onTouchEvent(e: MotionEvent): Boolean {
+        val b = brush
+        if (b != null) {
+            if (e.actionMasked == MotionEvent.ACTION_DOWN && e.pointerCount == 1) { brushing = b.down(e.x, e.y); if (brushing) return true }
+            else if (brushing) {
+                when {
+                    e.actionMasked == MotionEvent.ACTION_POINTER_DOWN -> { brushing = false; b.up() }
+                    e.actionMasked == MotionEvent.ACTION_MOVE -> { b.move(e.x, e.y); return true }
+                    e.actionMasked == MotionEvent.ACTION_UP || e.actionMasked == MotionEvent.ACTION_CANCEL -> { brushing = false; b.up(); return true }
+                }
+            }
+        }
         scale.onTouchEvent(e); gestures.onTouchEvent(e)
         val cx = (0 until e.pointerCount).map { e.getX(it) }.average().toFloat(); val cy = (0 until e.pointerCount).map { e.getY(it) }.average().toFloat()
         if (e.actionMasked == MotionEvent.ACTION_DOWN || e.pointerCount != lastCount) { lx = cx; ly = cy; lastCount = e.pointerCount; return true }

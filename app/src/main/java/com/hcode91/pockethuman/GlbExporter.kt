@@ -14,8 +14,9 @@ import java.nio.ByteOrder
 object GlbExporter {
     private const val SCALE = 0.1f
 
-    fun write(model: HumanModel, out: OutputStream) {
-        val parts = PartBuilder.build(model, true)
+    /** only: export these parts instead of the character (e.g. an imported model rigged as-is); extraTex: texture bytes by path */
+    fun write(model: HumanModel, out: OutputStream, only: List<Part>? = null, extraTex: Map<String, ByteArray> = emptyMap()) {
+        val parts = only ?: PartBuilder.build(model, true)
         // feet on the ground: lowest body vertex at y = 0
         var floor = Float.MAX_VALUE
         for (i in 0 until 13380) floor = minOf(floor, model.neutral[i * 3 + 1])
@@ -51,7 +52,7 @@ object GlbExporter {
         val images = JSONArray(); val textures = JSONArray(); val materials = JSONArray(); val meshes = JSONArray(); val nodes = JSONArray()
         val texIndex = HashMap<String, Int>()
         fun tex(path: String) = texIndex.getOrPut(path) {
-            val data = model.lib.am.bytes(path)
+            val data = extraTex[path] ?: model.lib.am.bytes(path)
             images.put(JSONObject().put("bufferView", view(data, null)).put("mimeType", if (path.endsWith(".png")) "image/png" else "image/jpeg"))
             textures.put(JSONObject().put("source", images.length() - 1).put("sampler", 0)); textures.length() - 1
         }
@@ -87,11 +88,11 @@ object GlbExporter {
             val mesh = JSONObject().put("name", p.name).put("primitives", JSONArray().put(prim))
             // carry the face shapes over to this part through its links to the base mesh
             val n = p.count; val per = p.refsPer
-            val per_part = shapeDeltas.map { d ->
+            val per_part = if (per == 0) emptyList() else shapeDeltas.map { d ->
                 FloatArray(n * 3) { i -> val v = i / 3; val k = i % 3; var x = 0f
                     for (q in 0 until per) x += p.baseRefW[v * per + q] * d[p.baseRefs[v * per + q] * 3 + k]; x }
             }
-            if (per_part.any { d -> d.any { it != 0f } }) {
+            if (per > 0 && per_part.any { d -> d.any { it != 0f } }) {
                 val targets = JSONArray()
                 for (d in per_part) targets.put(JSONObject().put("POSITION", sparseTarget(d)))
                 prim.put("targets", targets)

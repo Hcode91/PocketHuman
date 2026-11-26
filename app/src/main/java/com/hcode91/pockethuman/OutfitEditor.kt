@@ -107,7 +107,7 @@ class OutfitDraft(val id: String, var name: String, val raw: RawMesh, shared: Li
     fun previewDraft(): OutfitDraft {
         if (raw.tris.size / 3 <= 20000) return this
         val l = lite ?: OutfitDraft(id, name, MeshIO.simplify(raw, 15000), p).also { lite = it }
-        l.autoScale = autoScale; l.autoShift = autoShift.copyOf(); return l
+        l.autoScale = autoScale; l.autoShift = autoShift.copyOf(); l.strokes.clear(); l.strokes.addAll(strokes); return l
     }
     val p: LinkedHashMap<String, Float> = shared ?: linkedMapOf(
         "turn" to 0f, "upright" to 0f,                 // fix orientation: turn (x90°), upright (x90° about x)
@@ -117,17 +117,117 @@ class OutfitDraft(val id: String, var name: String, val raw: RawMesh, shared: Li
         "loosen" to 0f,                                // move along the body normal (dm)
         "clip" to 0.05f,                               // keep at least this far outside the body (dm); 0 = off
         "skinCut" to 0.5f,                             // remove skin-coloured parts near the body (0 = off)
-        "hideBody" to 1f                               // hide body skin underneath
+        "hideBody" to 1f,                              // hide body skin underneath
+        "kind" to 0f                                   // what it is, for auto-fit: see KINDS
     )
     var autoScale = 1f; var autoShift = FloatArray(3)
 
+    /** Brush strokes (grab / shrinkwrap / smooth / puff), replayed in order on any version of the mesh. */
+    class Stroke(val type: Int, val c: FloatArray, val r: Float, val d: FloatArray, val strength: Float)
+    val strokes = ArrayList<Stroke>()
+
     fun toJson() = JSONObject().put("id", id).put("name", name).put("params", JSONObject(p as Map<*, *>)).put("autoScale", autoScale.toDouble())
         .put("autoShift", JSONArray(autoShift.toList()))
+        .put("strokes", JSONArray(strokes.map { st -> JSONArray(listOf(st.type, st.c[0], st.c[1], st.c[2], st.r, st.d[0], st.d[1], st.d[2], st.strength)) }))
     fun loadParams(j: JSONObject) {
         j.optJSONObject("params")?.let { o -> for (k in p.keys) if (o.has(k)) p[k] = o.getDouble(k).toFloat() }
         autoScale = j.optDouble("autoScale", 1.0).toFloat()
         j.optJSONArray("autoShift")?.let { a -> for (k in 0..2) autoShift[k] = a.getDouble(k).toFloat() }
         name = j.optString("name", name)
+        strokes.clear()
+        j.optJSONArray("strokes")?.let { a -> for (i in 0 until a.length()) { val x = a.getJSONArray(i); fun f(k: Int) = x.getDouble(k).toFloat()
+            strokes.add(Stroke(x.getInt(0), floatArrayOf(f(1), f(2), f(3)), f(4), floatArrayOf(f(5), f(6), f(7)), f(8))) } }
+    }
+
+    /**
+     * Garments from AI tools come at arbitrary sizes (Meshy scales everything to the same box), so try a range of
+     * sizes and heights and keep the one where the garment wraps the body most snugly.
+     */
+    fun autoFit(body: BodyQuery) {
+        val o = oriented(); val bb = bounds(o); val bodyB = bounds(body.v, 13380)
+        val rawH = (bb[4] - bb[1]).coerceAtLeast(1e-6f); val bodyH = bodyB[4] - bodyB[1]
+        // where on the body this kind of garment sits (fractions of body height from the feet)
+        val (lo, hi) = KIND_SPANS[p["kind"]!!.toInt().coerceIn(0, KIND_SPANS.size - 1)]
+        val yLo = bodyB[1] + lo * bodyH; val yHi = bodyB[1] + hi * bodyH
+        val n = raw.nv; val step = maxOf(1, n / 400)
+        val sample = (0 until n step step).toList()
+        val cx = (bodyB[0] + bodyB[3]) / 2; val cz = (bodyB[2] + bodyB[5]) / 2
+        var best = -1e9f; var bs = 1f; var by = 0f
+        // body points the garment ought to cover: torso-ish verts within the garment's span (skip far-out arms/hands)
+        val halfW = 0.22f * bodyH
+        val cover = ArrayList<Int>(); run { var i = 0; while (i < 13380) { val y = body.v[i * 3 + 1]; val x = body.v[i * 3]
+            if (y in yLo..yHi && Math.abs(x - cx) < halfW) cover.add(i); i += 7 } }
+        val cs = 0.45f
+        val gSample = (0 until n step maxOf(1, n / 2500)).toList()
+        fun coverage(sc: Float, yb: Float): Float {
+            if (cover.isEmpty()) return 0f
+            val cells = HashSet<Long>(gSample.size * 2)
+            for (i in gSample) {
+                val x = (o[i * 3] - (bb[0] + bb[3]) / 2) * sc + cx; val y = (o[i * 3 + 1] - bb[1]) * sc + yb; val z = (o[i * 3 + 2] - (bb[2] + bb[5]) / 2) * sc + cz
+                cells.add(key(Math.floor((x / cs).toDouble()).toInt(), Math.floor((y / cs).toDouble()).toInt(), Math.floor((z / cs).toDouble()).toInt()))
+            }
+            var hit = 0
+            for (v in cover) { val gx = Math.floor((body.v[v * 3] / cs).toDouble()).toInt(); val gy = Math.floor((body.v[v * 3 + 1] / cs).toDouble()).toInt(); val gz = Math.floor((body.v[v * 3 + 2] / cs).toDouble()).toInt()
+                var f = false; loop@ for (a in -1..1) for (b in -1..1) for (c in -1..1) if (cells.contains(key(gx + a, gy + b, gz + c))) { f = true; break@loop }
+                if (f) hit++ }
+            return hit.toFloat() / cover.size
+        }
+        fun closeness(sc: Float, yb: Float): Float {
+            var good = 0; var bad = 0; var far = 0
+            for (i in sample) {
+                val x = (o[i * 3] - (bb[0] + bb[3]) / 2) * sc + cx; val y = (o[i * 3 + 1] - bb[1]) * sc + yb; val z = (o[i * 3 + 2] - (bb[2] + bb[5]) / 2) * sc + cz
+                val h = body.nearest(x, y, z, 1.2f); if (h == null) { far++; continue }
+                val nn = body.normalAt(h); val depth = (x - h.x) * nn[0] + (y - h.y) * nn[1] + (z - h.z) * nn[2]
+                if (depth < -0.15f) bad++ else if (depth < 0.5f) good++ else far++
+            }
+            return (good - 2f * bad - 0.5f * far) / sample.size
+        }
+        fun score(sc: Float, yb: Float): Float = closeness(sc, yb) + 1.5f * coverage(sc, yb)
+        val span = yHi - yLo
+        for (f in listOf(0.3f, 0.4f, 0.5f, 0.6f, 0.7f, 0.8f, 0.9f, 1f, 1.1f, 1.2f)) {
+            val sc = span * f / rawH; val gh = rawH * sc
+            var yb = yLo - 0.1f * span
+            while (yb + gh <= yHi + 0.1f * span) { val v = score(sc, yb); if (v > best) { best = v; bs = sc; by = yb }; yb += maxOf(0.2f, span / 25) }
+        }
+        // refine around the best guess
+        for (r in 0 until 2) { val d = if (r == 0) 0.06f else 0.025f; val dy = if (r == 0) 0.25f else 0.1f
+            var b2 = best; var s2 = bs; var y2 = by
+            for (a in -2..2) for (b in -2..2) { val sc = bs * (1 + a * d); val yb = by + b * dy
+                if (yb < yLo - 0.1f * span || yb + rawH * sc > yHi + 0.1f * span) continue
+                val v = score(sc, yb); if (v > b2) { b2 = v; s2 = sc; y2 = yb } }
+            best = b2; bs = s2; by = y2 }
+        autoScale = bs
+        // a single garment has no skin of its own: dark marks in its texture shouldn't be cut out as skin
+        val k = p["kind"]!!.toInt(); if (k != 0 && k != 4) p["skinCut"] = 0f
+        autoShift[0] = cx - bs * (bb[0] + bb[3]) / 2; autoShift[1] = by - bs * bb[1]; autoShift[2] = cz - bs * (bb[2] + bb[5]) / 2
+    }
+
+    private fun key(x: Int, y: Int, z: Int): Long = ((x + 100000).toLong() shl 42) or ((y + 100000).toLong() shl 21) or (z + 100000).toLong()
+
+    private var adjCache: Array<IntArray>? = null
+    private fun adjacency(): Array<IntArray> = adjCache ?: run {
+        val a = Array(raw.nv) { HashSet<Int>(8) }; var t = 0
+        while (t < raw.tris.size) { val x = raw.tris[t]; val y = raw.tris[t + 1]; val z = raw.tris[t + 2]; a[x].add(y); a[x].add(z); a[y].add(x); a[y].add(z); a[z].add(x); a[z].add(y); t += 3 }
+        Array(raw.nv) { a[it].toIntArray() }.also { adjCache = it }
+    }
+    private fun falloff(d: Float, r: Float): Float { if (d >= r) return 0f; val t = 1 - d / r; return t * t * (3 - 2 * t) }
+
+    /** Apply one stroke to positions (also used live while dragging). */
+    fun applyStroke(st: Stroke, pos: FloatArray, body: BodyQuery) {
+        val n = pos.size / 3; val r = st.r
+        when (st.type) {
+            GRAB -> for (i in 0 until n) { val dx = pos[i * 3] - st.c[0]; val dy = pos[i * 3 + 1] - st.c[1]; val dz = pos[i * 3 + 2] - st.c[2]
+                val w = falloff(Math.sqrt((dx * dx + dy * dy + dz * dz).toDouble()).toFloat(), r); if (w > 0) for (k in 0..2) pos[i * 3 + k] += w * st.d[k] }
+            SHRINK, PUFF -> for (i in 0 until n) { val dx = pos[i * 3] - st.c[0]; val dy = pos[i * 3 + 1] - st.c[1]; val dz = pos[i * 3 + 2] - st.c[2]
+                val w = falloff(Math.sqrt((dx * dx + dy * dy + dz * dz).toDouble()).toFloat(), r) * st.strength; if (w <= 0) continue
+                val h = body.nearest(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2], 3f) ?: continue; val nn = body.normalAt(h)
+                if (st.type == SHRINK) { val gap = maxOf(p["clip"]!!, 0.02f); for (k in 0..2) { val tgt = floatArrayOf(h.x, h.y, h.z)[k] + nn[k] * gap; pos[i * 3 + k] += w * (tgt - pos[i * 3 + k]) } }
+                else for (k in 0..2) pos[i * 3 + k] += w * nn[k] * 0.15f }
+            SMOOTH -> { val adj = adjacency(); val src = pos.copyOf()
+                for (i in 0 until n) { val dx = src[i * 3] - st.c[0]; val dy = src[i * 3 + 1] - st.c[1]; val dz = src[i * 3 + 2] - st.c[2]
+                    val w = falloff(Math.sqrt((dx * dx + dy * dy + dz * dz).toDouble()).toFloat(), r) * st.strength; if (w <= 0 || adj[i].isEmpty()) continue
+                    for (k in 0..2) { var a = 0f; for (j in adj[i]) a += src[j * 3 + k]; pos[i * 3 + k] += w * (a / adj[i].size - src[i * 3 + k]) } } }
+        }
     }
 
     private fun oriented(): FloatArray {
@@ -212,6 +312,7 @@ class OutfitDraft(val id: String, var name: String, val raw: RawMesh, shared: Li
             val nn = body.normalAt(h); val push = loosen * (1f - h.dist / 1.5f).coerceAtLeast(0f)
             pos[i * 3] += nn[0] * push; pos[i * 3 + 1] += nn[1] * push; pos[i * 3 + 2] += nn[2] * push
         }
+        if (strokes.isNotEmpty()) { for (st in strokes) applyStroke(st, pos, body); for (i in 0 until n) hits[i] = body.nearest(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]) }
         if (clip > 0f) for (pass in 0 until 3) {
             var fixed = 0
             for (i in 0 until n) {
@@ -239,29 +340,46 @@ class OutfitDraft(val id: String, var name: String, val raw: RawMesh, shared: Li
         val hidden = BooleanArray(model.lib.base.nV)
         if (p["hideBody"]!! > 0.5f) {
             val used = BooleanArray(n); keep.forEach { used[it] = true }
-            val cov = IntArray(model.lib.base.nV)
-            for (i in 0 until n) { if (!used[i]) continue; val h = hits[i] ?: continue; if (h.dist > 0.6f) continue
-                if (h.w0 > 0.2f) cov[body.tris[h.tri * 3]]++; if (h.w1 > 0.2f) cov[body.tris[h.tri * 3 + 1]]++; if (h.w2 > 0.2f) cov[body.tris[h.tri * 3 + 2]]++ }
-            for (i in cov.indices) if (cov[i] > 0) hidden[i] = true
-            // shrink the hidden area by one ring so no gaps show at the edges
-            val edge = BooleanArray(hidden.size)
-            var q = 0
-            while (q < body.tris.size) { val a = body.tris[q]; val b = body.tris[q + 1]; val c = body.tris[q + 2]
-                val h = (if (hidden[a]) 1 else 0) + (if (hidden[b]) 1 else 0) + (if (hidden[c]) 1 else 0)
-                if (h in 1..2) { edge[a] = true; edge[b] = true; edge[c] = true }; q += 3 }
-            for (i in hidden.indices) if (edge[i]) hidden[i] = false
+            // a body vertex is covered when garment lies over it: outward along its normal, close sideways
+            val r = 0.3f; val cells = HashMap<Long, ArrayList<Int>>()
+            for (i in 0 until n) if (used[i]) cells.getOrPut(key(Math.floor((pos[i * 3] / r).toDouble()).toInt(), Math.floor((pos[i * 3 + 1] / r).toDouble()).toInt(), Math.floor((pos[i * 3 + 2] / r).toDouble()).toInt())) { ArrayList() }.add(i)
+            val bodyUsed = BooleanArray(model.lib.base.nV); body.tris.forEach { bodyUsed[it] = true }
+            for (i in 0 until model.lib.base.nV) { if (!bodyUsed[i]) continue
+                val bx = body.v[i * 3]; val by = body.v[i * 3 + 1]; val bz = body.v[i * 3 + 2]
+                val nx = body.vn[i * 3]; val ny = body.vn[i * 3 + 1]; val nz = body.vn[i * 3 + 2]
+                val gx = Math.floor((bx / r).toDouble()).toInt(); val gy = Math.floor((by / r).toDouble()).toInt(); val gz = Math.floor((bz / r).toDouble()).toInt()
+                var f = false
+                loop@ for (a2 in -1..1) for (b2 in -1..1) for (c2 in -1..1) { val l = cells[key(gx + a2, gy + b2, gz + c2)] ?: continue
+                    for (j in l) { val dx = pos[j * 3] - bx; val dy = pos[j * 3 + 1] - by; val dz = pos[j * 3 + 2] - bz
+                        val along = dx * nx + dy * ny + dz * nz; if (along < -0.03f || along > 0.3f) continue
+                        val side2 = dx * dx + dy * dy + dz * dz - along * along
+                        if (side2 < 0.22f * 0.22f) { f = true; break@loop } } }
+                if (f) hidden[i] = true }
+            // fill speckles: a vertex whose triangles are mostly hidden around it gets hidden too (twice)
+            repeat(2) {
+                val hc = IntArray(hidden.size); val tc = IntArray(hidden.size)
+                var q = 0
+                while (q < body.tris.size) { val a = body.tris[q]; val b = body.tris[q + 1]; val c = body.tris[q + 2]
+                    val h = (if (hidden[a]) 1 else 0) + (if (hidden[b]) 1 else 0) + (if (hidden[c]) 1 else 0)
+                    for (x in intArrayOf(a, b, c)) { tc[x]++; if (h >= 2) hc[x]++ }; q += 3 }
+                for (i in hidden.indices) if (!hidden[i] && tc[i] > 0 && hc[i] * 3 >= tc[i] * 2) hidden[i] = true
+            }
+            // then pull the edge in by one ring so no gaps show where the cloth ends
+            run { val edge = BooleanArray(hidden.size); var q = 0
+                while (q < body.tris.size) { val a = body.tris[q]; val b = body.tris[q + 1]; val c = body.tris[q + 2]
+                    val h = (if (hidden[a]) 1 else 0) + (if (hidden[b]) 1 else 0) + (if (hidden[c]) 1 else 0)
+                    if (h in 1..2) { edge[a] = true; edge[b] = true; edge[c] = true }; q += 3 }
+                for (i in hidden.indices) if (edge[i]) hidden[i] = false }
         }
         return Fitted(pos, keep.toIntArray(), hidden, hits)
     }
 
-    private fun isSkin(rgb: Int, sens: Float): Boolean {
-        val r = (rgb shr 16) and 0xff; val g = (rgb shr 8) and 0xff; val b = rgb and 0xff
-        val mx = maxOf(r, g, b); val mn = minOf(r, g, b)
-        if (mx < 60) return false
-        val sat = (mx - mn) / mx.toFloat()
-        // warm hue (red > green > blue), moderate saturation: covers light to dark skin
-        // skin is clearly warmer than off-white cloth: red well above blue, saturation 0.2-0.6
-        return r > g && g >= b * 0.85f && r - b > 30 - 10 * sens && sat in (0.2f - 0.06f * sens)..(0.62f + 0.1f * sens)
+    private fun isSkin(rgb: Int, sens: Float) = isSkinColour(rgb, sens)
+
+    /** Fitted positions with no clean-up (no skin removal, clipping or loosening): the model exactly as lined up. */
+    fun alignedOnly(model: HumanModel, body: BodyQuery): Fitted {
+        val keep = HashMap(p); p["skinCut"] = 0f; p["clip"] = 0f; p["loosen"] = 0f; p["hideBody"] = 0f
+        try { return compute(model, body, null) } finally { p.putAll(keep) }
     }
 
     /** Turn the fitted outfit into a regular clothing item (bound to the base mesh) and save it. */
@@ -329,6 +447,17 @@ class OutfitDraft(val id: String, var name: String, val raw: RawMesh, shared: Li
     }
 
     companion object {
+        const val GRAB = 0; const val SHRINK = 1; const val SMOOTH = 2; const val PUFF = 3
+        val KINDS = listOf("Anything", "Top", "Bottoms", "Dress", "Full outfit", "Shoes", "Hat")
+        val KIND_SPANS = listOf(0f to 1.02f, 0.45f to 0.86f, 0f to 0.64f, 0.1f to 0.86f, 0f to 0.95f, 0f to 0.12f, 0.84f to 1.04f)
+        /** Skin is clearly warmer than off-white cloth: red well above blue, saturation about 0.2-0.6. */
+        fun isSkinColour(rgb: Int, sens: Float): Boolean {
+            val r = (rgb shr 16) and 0xff; val g = (rgb shr 8) and 0xff; val b = rgb and 0xff
+            val mx = maxOf(r, g, b); val mn = minOf(r, g, b)
+            if (mx < 60) return false
+            val sat = (mx - mn) / mx.toFloat()
+            return r > g && g >= b * 0.85f && r - b > 30 - 10 * sens && sat in (0.2f - 0.06f * sens)..(0.62f + 0.1f * sens)
+        }
         fun loadSaved(filesDir: File, id: String): OutfitDraft? {
             val d = File(filesDir, "outfits/$id"); val mf = File(d, "mesh.bin"); if (!mf.exists()) return null
             val bb = ByteBuffer.wrap(mf.readBytes()).order(ByteOrder.LITTLE_ENDIAN)
