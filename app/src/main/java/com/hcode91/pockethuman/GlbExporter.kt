@@ -95,7 +95,7 @@ object GlbExporter {
                 for (d in per_part) targets.put(JSONObject().put("POSITION", sparseTarget(d)))
                 prim.put("targets", targets)
                 mesh.put("weights", JSONArray(List(shapeKeys.size) { 0 }))
-                mesh.put("extras", JSONObject().put("targetNames", JSONArray(shapeKeys.map { it.substringAfter(':') })))
+                mesh.put("extras", JSONObject().put("targetNames", JSONArray(shapeKeys.map { it.substringAfter(':').substringAfterLast('/') })))
             }
             meshes.put(mesh)
             val node = JSONObject().put("name", p.name).put("mesh", meshes.length() - 1).put("skin", 0)
@@ -121,7 +121,8 @@ object GlbExporter {
         val st = model.state
         val gltf = JSONObject()
             .put("asset", JSONObject().put("version", "2.0").put("generator", "PocketHuman").put("copyright", "Made with PocketHuman. Base mesh and assets: MakeHuman / MPFB2 community, CC0")
-                .put("extras", st.toJson()))
+                .put("extras", st.toJson().put("credits", org.json.JSONArray(Credits.forCharacter(model).map { c ->
+                    JSONObject().put("asset", c.asset).put("author", c.author).put("pack", c.pack).put("license", c.license) }))))
             .put("scene", 0).put("scenes", JSONArray().put(JSONObject().put("nodes", JSONArray().put(nodes.length() - 1))))
             .put("nodes", nodes).put("meshes", meshes).put("materials", materials).put("textures", textures).put("images", images)
             .put("samplers", JSONArray().put(JSONObject().put("magFilter", 9729).put("minFilter", 9987)))

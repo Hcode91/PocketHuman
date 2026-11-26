@@ -17,7 +17,7 @@ import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 
 /** Orbit-camera 3D view of the character. One finger turns, pinch zooms, two fingers move up/down, double tap = face/body. */
-class HumanView(ctx: Context, private val lib: Library) : GLSurfaceView(ctx) {
+class HumanView(ctx: Context, private var lib: Library) : GLSurfaceView(ctx) {
     private val r = R3()
     var yaw = 0f; var pitch = 5f; var dist = 38f; var targetY = 8.5f
     private var faceMode = false
@@ -28,6 +28,7 @@ class HumanView(ctx: Context, private val lib: Library) : GLSurfaceView(ctx) {
         setRenderer(r); renderMode = RENDERMODE_WHEN_DIRTY
     }
 
+    fun reload(l: Library) { lib = l }
     fun show(parts: List<Part>) { queueEvent { r.pending = parts }; requestRender() }
 
     private val scale = ScaleGestureDetector(ctx, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {

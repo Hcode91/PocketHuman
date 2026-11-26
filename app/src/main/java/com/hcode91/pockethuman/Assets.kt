@@ -39,17 +39,21 @@ class BaseMesh(am: AssetSource) {
 
 /** Morph targets, decoded lazily from targets.bin (index + half-float offsets). */
 class Targets(am: AssetSource) {
-    private val blob = ByteBuffer.wrap(am.bytes("targets.bin")).order(ByteOrder.LITTLE_ENDIAN)
-    private val index = HashMap<String, IntArray>()
+    private val blobs = ArrayList<ByteBuffer>()
+    private val index = HashMap<String, IntArray>()   // name -> (blob, offset, count)
     private val cache = HashMap<String, Pair<IntArray, FloatArray>>()
-    init {
-        val j = JSONObject(am.json("targets.json"))
-        for (k in j.keys()) { val a = j.getJSONArray(k); index[k] = intArrayOf(a.getInt(0), a.getInt(1)) }
+    init { add(am.bytes("targets.bin"), am.json("targets.json")) }
+    /** Adds a targets.bin/targets.json pair (bundled or from an imported pack). */
+    fun add(bin: ByteArray, indexJson: String) {
+        val b = blobs.size; blobs.add(ByteBuffer.wrap(bin).order(ByteOrder.LITTLE_ENDIAN))
+        val j = JSONObject(indexJson)
+        for (k in j.keys()) { val a = j.getJSONArray(k); index[k] = intArrayOf(b, a.getInt(0), a.getInt(1)) }
     }
     fun has(name: String) = index.containsKey(name)
     fun get(name: String): Pair<IntArray, FloatArray>? {
         cache[name]?.let { return it }
-        val (off, n) = index[name] ?: return null
+        val (bi, off, n) = index[name] ?: return null
+        val blob = blobs[bi]
         val idx = IntArray(n) { blob.getShort(off + it * 2).toInt() and 0xffff }
         val d = FloatArray(n * 3) { half(blob.getShort(off + n * 2 + it * 2)) }
         return Pair(idx, d).also { cache[name] = it }
@@ -72,6 +76,15 @@ class MacroPart(val lowest: Float, val highest: Float, val low: String, val high
 
 class SliderDefs(am: AssetSource) {
     val groups = ArrayList<SliderGroup>()
+    fun addGroups(g: JSONArray) {
+        for (i in 0 until g.length()) {
+            val o = g.getJSONObject(i); val s = o.getJSONArray("sliders")
+            groups.add(SliderGroup(o.getString("group"), (0 until s.length()).map {
+                val x = s.getJSONObject(it)
+                Slider(x.getString("id"), x.getString("label"), strs(x.getJSONArray("neg")), strs(x.getJSONArray("pos")))
+            }, o.optBoolean("adult", false)))
+        }
+    }
     val macro = HashMap<String, List<MacroPart>>()
     val expressions = ArrayList<String>()
     val arkit = ArrayList<String>()
@@ -145,36 +158,67 @@ class ProxyMesh(am: AssetSource, val info: ProxyInfo) {
     }
 }
 
-class Library(val am: AssetSource) {
+class Credit(val asset: String, val pack: String, val author: String, val license: String)
+class InstalledPack(val id: String, val title: String, val license: String, val counts: String)
+
+class Library(val am: AssetSource, importRoot: java.io.File? = null) {
     val base = BaseMesh(am)
     val targets = Targets(am)
     val defs = SliderDefs(am)
     val rig = Rig(am, base.nV)
-    val proxies: List<ProxyInfo>
-    val skins: List<Skin>
+    val proxies = ArrayList<ProxyInfo>()
+    val skins = ArrayList<Skin>()
+    /** extra face shapes from imported packs (visemes etc.): target names */
+    val packFaceShapes = ArrayList<String>()
+    /** credits keyed by proxy id / skin texture / target name */
+    val credits = HashMap<String, Credit>()
+    val installed = ArrayList<InstalledPack>()
     private val meshCache = HashMap<String, ProxyMesh>()
-    init {
-        val p = JSONArray(am.json("proxies.json"))
-        proxies = (0 until p.length()).map {
+
+    private fun credit(o: JSONObject?): Credit? = o?.let { Credit(it.optString("asset"), it.optString("pack"), it.optString("author"), it.optString("license", "CC0")) }
+    private fun loadProxies(p: JSONArray) {
+        for (it in 0 until p.length()) {
             val o = p.getJSONObject(it); val v = o.getJSONArray("variants"); val d = o.getJSONArray("delete")
-            ProxyInfo(o.getString("id"), o.getString("kind"), o.getString("label"), o.getString("file"), IntArray(d.length()) { i -> d.getInt(i) },
+            val info = ProxyInfo(o.getString("id"), o.getString("kind"), o.getString("label"), o.getString("file"), IntArray(d.length()) { i -> d.getInt(i) },
                 (0 until v.length()).map { i -> val x = v.getJSONObject(i); ProxyVariant(x.getString("name"), x.getString("texture"), x.getBoolean("alpha"), x.optString("normal").ifEmpty { null }) },
                 o.optInt("zdepth", 50))
+            proxies.add(info); credit(o.optJSONObject("credit"))?.let { c -> credits[info.id] = c }
         }
-        val s = JSONArray(am.json("skins.json"))
-        skins = (0 until s.length()).map { val o = s.getJSONObject(it)
-            Skin(o.getString("name"), o.getString("texture"), o.optString("normal").ifEmpty { null }, o.optBoolean("adult"), o.optBoolean("system"),
-                o.optString("race").ifEmpty { null }, o.optString("gender", "female"), o.optString("age", "young")) }
+    }
+    private fun loadSkins(s: JSONArray) {
+        for (it in 0 until s.length()) { val o = s.getJSONObject(it)
+            val sk = Skin(o.getString("name"), o.getString("texture"), o.optString("normal").ifEmpty { null }, o.optBoolean("adult"), o.optBoolean("system"),
+                o.optString("race").ifEmpty { null }, o.optString("gender", "female"), o.optString("age", "young"))
+            skins.add(sk); credit(o.optJSONObject("credit"))?.let { c -> credits[sk.texture] = c } }
+    }
+    init {
+        loadProxies(JSONArray(am.json("proxies.json")))
+        loadSkins(JSONArray(am.json("skins.json")))
+        importRoot?.resolve("imported")?.listFiles()?.filter { java.io.File(it, "manifest.json").exists() }?.sortedBy { it.name }?.forEach { dir ->
+            runCatching {
+                val m = JSONObject(java.io.File(dir, "manifest.json").readText())
+                loadProxies(m.getJSONArray("proxies")); loadSkins(m.getJSONArray("skins")); defs.addGroups(m.getJSONArray("groups"))
+                val tb = java.io.File(dir, "targets.bin"); if (tb.exists()) targets.add(tb.readBytes(), java.io.File(dir, "targets.json").readText())
+                val fs = m.getJSONArray("faceShapes"); for (i in 0 until fs.length()) packFaceShapes.add(fs.getString(i))
+                val cr = m.getJSONArray("credits"); for (i in 0 until cr.length()) credit(cr.getJSONObject(i))?.let { c -> credits.putIfAbsent(c.asset, c) }
+                val parts = listOf("clothes", "hair", "eyebrows", "eyelashes").map { k -> k to m.getJSONArray("proxies").let { a -> (0 until a.length()).count { a.getJSONObject(it).getString("kind") == k } } }
+                    .filter { it.second > 0 }.map { "${it.second} ${it.first}" } +
+                    listOfNotNull(m.getJSONArray("skins").length().takeIf { it > 0 }?.let { "$it skins" }, fs.length().takeIf { it > 0 }?.let { "$it face shapes" },
+                        m.getJSONArray("groups").length().takeIf { it > 0 }?.let { "${(0 until it).sumOf { g -> m.getJSONArray("groups").getJSONObject(g).getJSONArray("sliders").length() }} shape sliders" })
+                installed.add(InstalledPack(m.getString("id"), m.getString("title"), m.getString("license"), parts.joinToString(", ")))
+            }
+        }
     }
     fun proxy(id: String) = meshCache.getOrPut(id) { ProxyMesh(am, proxies.first { it.id == id }) }
     fun ofKind(kind: String) = proxies.filter { it.kind == kind }
 
     /** All face shapes: MakeHuman units ("mh:mouth-open") and ARKit face units ("arkit:jawOpen"). */
-    fun faceShapes(): List<String> = defs.expressions.map { "mh:$it" } + defs.arkit.map { "arkit:$it" }
+    fun faceShapes(): List<String> = defs.expressions.map { "mh:$it" } + defs.arkit.map { "arkit:$it" } + packFaceShapes.map { "pack:$it" }
 
     /** (target, weight) pairs making up one face shape; MakeHuman units blend the three ethnic variants. */
     fun faceShapeTargets(key: String, race: Map<String, Float>): List<Pair<String, Float>> =
         if (key.startsWith("arkit:")) listOf("faceunits/" + key.removePrefix("arkit:") to 1f)
+        else if (key.startsWith("pack:")) listOf(key.removePrefix("pack:") to 1f)
         else race.map { (r, w) -> "expression/units/$r/${key.removePrefix("mh:")}" to w }
 
     /** A face shape as a dense offset field over the base vertices. */

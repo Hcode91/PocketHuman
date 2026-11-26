@@ -41,7 +41,7 @@ class MainActivity : Activity() {
         val loading = TextView(this).apply { text = "Loading PocketHuman…"; setTextColor(fg); gravity = Gravity.CENTER; textSize = 18f }
         setContentView(loading)
         worker.execute {
-            lib = Library(assets.source()); model = HumanModel(lib)
+            lib = makeLibrary(); model = HumanModel(lib)
             restoreLast()
             model.rebuild()
             val parts = PartBuilder.build(model, false)
@@ -58,6 +58,16 @@ class MainActivity : Activity() {
                 view3d.show(parts); updateInfo(); buildTabs(); showTab(tab)
             }
         }
+    }
+
+    private fun makeLibrary() = Library(AssetSource { p -> if (p.startsWith("imported/")) java.io.File(filesDir, p).readBytes() else assets.open("ph/$p").use { it.readBytes() } }, filesDir)
+
+    /** Reload everything after packs change, keeping the current character. */
+    private fun reloadLibrary(done: () -> Unit) = worker.execute {
+        val keep = model.state.toJson()
+        lib = makeLibrary(); model = HumanModel(lib); model.state.load(keep); model.rebuild()
+        val parts = PartBuilder.build(model, false)
+        runOnUiThread { view3d.reload(lib); view3d.show(parts); updateInfo(); done() }
     }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
@@ -77,7 +87,7 @@ class MainActivity : Activity() {
     }
 
     // ------------------------------------------------------------------ tabs
-    private val tabs = listOf("Body", "Ethnicity", "Details", "Face", "Skin", "Eyes", "Hair", "Clothes", "Save")
+    private val tabs = listOf("Body", "Ethnicity", "Details", "Face", "Skin", "Eyes", "Hair", "Clothes", "Packs", "Save")
     private fun buildTabs() {
         tabBar.removeAllViews()
         for (t in tabs) tabBar.addView(chip(t, t == tab) { tab = t; buildTabs(); showTab(t) })
@@ -153,6 +163,14 @@ class MainActivity : Activity() {
                 slider("Breast firmness", s.macro["firmness"]!!, 0f, 1f, ::pct) { s.macro["firmness"] = it; changed() }
             }
             "Ethnicity" -> {
+                header("Starting points (real faces vary a lot within every group, so adjust freely)")
+                val row = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                var line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                Ethnicities.presets.forEachIndexed { i, pr ->
+                    if (i % 3 == 0) { line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(3), 0, dp(3)) }; row.addView(line) }
+                    line.addView(chip(pr.name, false) { Ethnicities.apply(pr, model); changed(); saveLast(); showTab("Ethnicity") })
+                }
+                content.addView(row)
                 header("Mix of the three base shapes (always adds up to 100%)")
                 val bars = HashMap<String, SeekBar>()
                 for (k in s.race.keys.toList()) bars[k] = slider(k, s.race[k]!!, 0f, 1f, ::pct) { x ->
@@ -187,12 +205,16 @@ class MainActivity : Activity() {
                 content.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(row) })
                 header("MakeHuman face units")
                 for (u in lib.defs.expressions) slider(u.replace('-', ' '), s.expression["mh:$u"] ?: 0f, 0f, 1f, ::pct) { x -> if (x < 0.01f) s.expression.remove("mh:$u") else s.expression["mh:$u"] = x; changed() }
+                if (lib.packFaceShapes.isNotEmpty()) {
+                    header("From packs (visemes and more)")
+                    for (k in lib.packFaceShapes) slider(k.substringAfterLast('/').replace('_', ' '), s.expression["pack:$k"] ?: 0f, 0f, 1f, ::pct) { x -> if (x < 0.01f) s.expression.remove("pack:$k") else s.expression["pack:$k"] = x; changed() }
+                }
                 header("ARKit face units")
                 for (u in lib.defs.arkit) slider(u, s.expression["arkit:$u"] ?: 0f, 0f, 1f, ::pct) { x -> if (x < 0.01f) s.expression.remove("arkit:$u") else s.expression["arkit:$u"] = x; changed() }
             }
             "Clothes" -> {
                 header("Tap to put on or take off. Body under clothes is hidden, and kept as its own part in the export.")
-                for (p in lib.ofKind("clothes")) toggleOption(p.label, p.id in s.clothes) { if (!s.clothes.remove(p.id)) s.clothes.add(p.id) }
+                for (p in lib.ofKind("clothes")) toggleOption(p.label + (lib.credits[p.id]?.takeIf { !it.license.equals("CC0", true) }?.let { "  (${it.license})" } ?: ""), p.id in s.clothes) { if (!s.clothes.remove(p.id)) s.clothes.add(p.id) }
             }
             "Eyes" -> {
                 val eyes = lib.proxies.firstOrNull { it.kind == "eyes" }
@@ -210,6 +232,7 @@ class MainActivity : Activity() {
                 for (p in lib.ofKind("eyebrows")) option(p.label, s.eyebrows == p.id) { s.eyebrows = p.id }
             }
             "Save" -> saveTab()
+            "Packs" -> packsTab()
         }
     }
 
@@ -233,12 +256,93 @@ class MainActivity : Activity() {
         button("Load character") { startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "*/*" }, REQ_LOAD) }
         button("Randomise") { randomise() }
         button("Reset") { AlertDialog.Builder(this).setMessage("Reset everything?").setPositiveButton("Reset") { _, _ -> model.state.load(HumanState().toJson()); changed(); saveLast(); showTab(tab) }.setNegativeButton("Cancel", null).show() }
+        val cr = Credits.forCharacter(model).filter { !it.license.equals("CC0", true) }
+        if (cr.isNotEmpty()) {
+            header("Credits needed for this character")
+            content.addView(TextView(this).apply { setTextColor(fg); textSize = 13f
+                text = cr.joinToString("\n") { "• ${it.asset.replace('_', ' ')} by ${it.author.ifEmpty { "unknown" }} (${it.pack}, ${it.license})" } + "\n\nThese are also saved inside the exported .glb." })
+        }
         content.addView(TextView(this).apply {
             setTextColor(dim); textSize = 12f; setPadding(0, dp(16), 0, 0)
             text = "The .glb has a Mixamo-named skeleton (A-pose), skin weights, eyes, brows, lashes, teeth and hair, ready for the Pose Studio, Blender or Godot.\n\n" +
                 "Body, morphs, skins, eyes and hair come from the MakeHuman / MPFB2 community and are CC0, so anything you make is yours to use, including commercially."
         })
     }
+    private val catalog by lazy {
+        val a = org.json.JSONArray(String(assets.open("ph/catalog.json").use { it.readBytes() }))
+        (0 until a.length()).map { a.getJSONObject(it) }
+    }
+
+    private fun packsTab() {
+        content.addView(TextView(this).apply { setTextColor(dim); textSize = 12f; setPadding(0, dp(8), 0, dp(4))
+            text = "Packs from the MakeHuman community. CC0 = free to use. CC-BY = free to use, but credit the author (the Save tab lists who to credit). Downloads come straight from makehumancommunity.org." })
+        button("Import a pack .zip from this phone") { startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "application/zip" }, REQ_PACK) }
+        val have = lib.installed.associateBy { it.id }
+        for (p in catalog) {
+            val id = p.getString("id"); val inst = have[id]
+            val status = p.optString("status")
+            val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(4), dp(10), dp(4), dp(10)) }
+            box.addView(TextView(this).apply { text = p.getString("title"); setTextColor(fg); textSize = 15f })
+            val size = p.optLong("size") / 1_000_000.0
+            box.addView(TextView(this).apply { setTextColor(dim); textSize = 12f
+                text = "${p.getString("license")}  ·  ${"%.0f".format(maxOf(size, 0.1))} MB" + when {
+                    inst != null -> "  ·  installed: ${inst.counts}"
+                    status == "builtin" -> "  ·  ${p.optString("note")}"
+                    status == "unsupported" -> "  ·  ${p.optString("note")}"
+                    else -> "" } })
+            if (status.isEmpty()) box.addView(TextView(this).apply {
+                text = if (inst != null) "Remove" else "Download"; setTextColor(accent); textSize = 14f; setPadding(0, dp(6), 0, 0)
+                setOnClickListener {
+                    if (inst != null) { java.io.File(filesDir, "imported/$id").deleteRecursively(); reloadLibrary { showTab("Packs") } }
+                    else downloadPack(p)
+                } })
+            content.addView(box)
+        }
+        for (inst in lib.installed.filter { i -> catalog.none { it.getString("id") == i.id } }) {
+            content.addView(TextView(this).apply { text = "${inst.title} (imported)  ·  ${inst.counts}  ·  tap to remove"; setTextColor(fg); textSize = 14f; setPadding(dp(4), dp(10), dp(4), dp(10))
+                setOnClickListener { java.io.File(filesDir, "imported/${inst.id}").deleteRecursively(); reloadLibrary { showTab("Packs") } } })
+        }
+    }
+
+    private fun runImport(title: String, open: ((String) -> Unit) -> java.io.InputStream, id: String, license: String) {
+        val msg = TextView(this).apply { setTextColor(fg); setPadding(dp(20), dp(10), dp(20), dp(10)); text = "Starting…" }
+        val dlg = AlertDialog.Builder(this).setTitle(title).setView(msg).setCancelable(false).show()
+        worker.execute {
+            val res = runCatching {
+                open { t -> runOnUiThread { msg.text = t } }.use { PackImporter(filesDir, AndroidTextures).import(it, id, title, license) { t -> runOnUiThread { msg.text = t } } }
+            }
+            runOnUiThread {
+                dlg.dismiss()
+                res.onSuccess { r ->
+                    val what = r.counts.entries.joinToString(", ") { "${it.value} ${it.key}" }
+                    reloadLibrary { showTab("Packs"); AlertDialog.Builder(this).setTitle("Added").setMessage(what + if (r.skipped.isNotEmpty()) "\n\nSkipped ${r.skipped.size} item(s) that couldn't be used." else "").setPositiveButton("OK", null).show() }
+                }.onFailure { AlertDialog.Builder(this).setTitle("Couldn't add pack").setMessage(it.message ?: it.toString()).setPositiveButton("OK", null).show() }
+            }
+        }
+    }
+
+    private fun downloadPack(p: org.json.JSONObject) {
+        val total = p.optLong("size")
+        runImport(p.getString("title"), { report ->
+            var lastErr: Exception? = null
+            for (u in listOf(p.getString("url"), p.optString("mirror"))) {
+                if (u.isEmpty()) continue
+                try {
+                    val f = java.io.File(cacheDir, "pack.zip")
+                    val c = java.net.URL(u).openConnection() as java.net.HttpURLConnection
+                    c.connectTimeout = 20000; c.readTimeout = 60000; c.instanceFollowRedirects = true
+                    c.inputStream.use { inp -> f.outputStream().use { o ->
+                        val buf = ByteArray(1 shl 16); var n: Int; var got = 0L; var last = 0L
+                        while (inp.read(buf).also { n = it } >= 0) { o.write(buf, 0, n); got += n
+                            if (got - last > 1_000_000) { last = got; report("Downloading… ${got / 1_000_000} / ${maxOf(total / 1_000_000, 1)} MB") } }
+                    } }
+                    return@runImport object : java.io.FilterInputStream(f.inputStream()) { override fun close() { super.close(); f.delete() } }
+                } catch (e: Exception) { lastErr = e }
+            }
+            throw lastErr ?: IllegalStateException("download failed")
+        }, p.getString("id"), p.getString("license"))
+    }
+
     private fun safe(n: String) = n.replace(Regex("[^A-Za-z0-9 _-]"), "").trim().ifEmpty { "Character" }
 
     private fun randomise() {
@@ -278,6 +382,12 @@ class MainActivity : Activity() {
             }
             REQ_SAVE -> runCatching { contentResolver.openOutputStream(uri)!!.use { it.write(model.state.toJson().toString(2).toByteArray()) } }
                 .onSuccess { toast("Saved") }.onFailure { toast("Save failed: ${it.message}") }
+            REQ_PACK -> {
+                val name = (uri.lastPathSegment ?: "pack").substringAfterLast('/').substringAfterLast(':').removeSuffix(".zip")
+                val id = name.lowercase().replace(Regex("(_cc0|_ccby|_cc-by)$"), "").replace(Regex("[^a-z0-9_]"), "_")
+                val lic = if (Regex("cc-?by", RegexOption.IGNORE_CASE).containsMatchIn(name)) "CC-BY" else "as stated in the pack"
+                runImport(name, { contentResolver.openInputStream(uri)!! }, id, lic)
+            }
             REQ_LOAD -> runCatching {
                 val txt = contentResolver.openInputStream(uri)!!.use { String(it.readBytes()) }
                 model.state.load(JSONObject(txt))
@@ -292,5 +402,5 @@ class MainActivity : Activity() {
     override fun onPause() { super.onPause(); if (::view3d.isInitialized) view3d.onPause(); if (::model.isInitialized) saveLast() }
     override fun onResume() { super.onResume(); if (::view3d.isInitialized) view3d.onResume() }
 
-    companion object { const val REQ_GLB = 1; const val REQ_SAVE = 2; const val REQ_LOAD = 3 }
+    companion object { const val REQ_GLB = 1; const val REQ_SAVE = 2; const val REQ_LOAD = 3; const val REQ_PACK = 4 }
 }

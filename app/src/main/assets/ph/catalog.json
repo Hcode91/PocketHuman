@@ -1,0 +1,538 @@
+[
+{
+"id": "animal01",
+"title": "Animal 01",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/animal01/animal01_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/animal01/animal01_cc0.zip",
+"size": 441574
+},
+{
+"id": "arms01",
+"title": "Arms 01",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/arms01/arms01_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/arms01/arms01_cc0.zip",
+"size": 210241
+},
+{
+"id": "bodyparts01",
+"title": "Bodyparts 01",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/bodyparts01/bodyparts01_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/bodyparts01/bodyparts01_cc0.zip",
+"size": 829685
+},
+{
+"id": "bodyparts04",
+"title": "Bodyparts 04",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/bodyparts04/bodyparts04_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/bodyparts04/bodyparts04_cc0.zip",
+"size": 4560444
+},
+{
+"id": "bodyparts05",
+"title": "Bodyparts 05",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/bodyparts05/bodyparts05_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/bodyparts05/bodyparts05_cc0.zip",
+"size": 6616507
+},
+{
+"id": "cheek01",
+"title": "Cheek 01",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/cheek01/cheek01_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/cheek01/cheek01_cc0.zip",
+"size": 354207
+},
+{
+"id": "dress01",
+"title": "Dress 01",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/dress01/dress01_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/dress01/dress01_cc0.zip",
+"size": 46598791
+},
+{
+"id": "ears01",
+"title": "Ears 01",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/ears01/ears01_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/ears01/ears01_cc0.zip",
+"size": 568297
+},
+{
+"id": "equipment01",
+"title": "Equipment 01",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/equipment01/equipment01_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/equipment01/equipment01_cc0.zip",
+"size": 18111388
+},
+{
+"id": "eyebrows01",
+"title": "Eyebrows 01",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/eyebrows01/eyebrows01_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/eyebrows01/eyebrows01_cc0.zip",
+"size": 11477790
+},
+{
+"id": "eyelashes01",
+"title": "Eyelashes 01",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/eyelashes01/eyelashes01_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/eyelashes01/eyelashes01_cc0.zip",
+"size": 3493692
+},
+{
+"id": "glasses01",
+"title": "Glasses 01",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/glasses01/glasses01_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/glasses01/glasses01_cc0.zip",
+"size": 5782729
+},
+{
+"id": "gloves01",
+"title": "Gloves 01",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/gloves01/gloves01_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/gloves01/gloves01_cc0.zip",
+"size": 3192691
+},
+{
+"id": "hair01",
+"title": "Hair 01",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/hair01/hair01_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/hair01/hair01_cc0.zip",
+"size": 227775853
+},
+{
+"id": "hands01",
+"title": "Hands 01",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/hands01/hands01_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/hands01/hands01_cc0.zip",
+"size": 176073
+},
+{
+"id": "hats01",
+"title": "Hats 01",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/hats01/hats01_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/hats01/hats01_cc0.zip",
+"size": 6636192
+},
+{
+"id": "hats02",
+"title": "Hats 02",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/hats02/hats02_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/hats02/hats02_cc0.zip",
+"size": 24018546
+},
+{
+"id": "masks01",
+"title": "Masks 01",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/masks01/masks01_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/masks01/masks01_cc0.zip",
+"size": 4296547
+},
+{
+"id": "nose01",
+"title": "Nose 01",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/nose01/nose01_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/nose01/nose01_cc0.zip",
+"size": 1322139
+},
+{
+"id": "pants01",
+"title": "Pants 01",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/pants01/pants01_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/pants01/pants01_cc0.zip",
+"size": 21908723
+},
+{
+"id": "shirts01",
+"title": "Shirts 01",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/shirts01/shirts01_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/shirts01/shirts01_cc0.zip",
+"size": 24479483
+},
+{
+"id": "shoes01",
+"title": "Shoes 01",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/shoes01/shoes01_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/shoes01/shoes01_cc0.zip",
+"size": 82953569
+},
+{
+"id": "skins02",
+"title": "Skins 02 (natural male)",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/skins02/skins02_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/skins02/skins02_cc0.zip",
+"size": 76112708
+},
+{
+"id": "skins03",
+"title": "Skins 03 (non-natural)",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/skins03/skins03_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/skins03/skins03_cc0.zip",
+"size": 136827522
+},
+{
+"id": "skirts01",
+"title": "Skirts 01",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/skirts01/skirts01_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/skirts01/skirts01_cc0.zip",
+"size": 29554534
+},
+{
+"id": "suits01",
+"title": "Suits 01",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/suits01/suits01_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/suits01/suits01_cc0.zip",
+"size": 42624017
+},
+{
+"id": "suits02",
+"title": "Suits 02",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/suits02/suits02_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/suits02/suits02_cc0.zip",
+"size": 192511027
+},
+{
+"id": "underwear01",
+"title": "Underwear 01",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/underwear01/underwear01_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/underwear01/underwear01_cc0.zip",
+"size": 60561755
+},
+{
+"id": "underwear02",
+"title": "Underwear 02",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/underwear02/underwear02_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/underwear02/underwear02_cc0.zip",
+"size": 105440890
+},
+{
+"id": "underwear04",
+"title": "Underwear 04",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/underwear04/underwear04_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/underwear04/underwear04_cc0.zip",
+"size": 5619580
+},
+{
+"id": "visemes01",
+"title": "Visemes 01",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/functional/visemes01.zip",
+"mirror": "https://files2.makehumancommunity.org/functional/visemes01.zip",
+"size": 179683
+},
+{
+"id": "visemes02",
+"title": "Visemes 02",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/functional/visemes02.zip",
+"mirror": "https://files2.makehumancommunity.org/functional/visemes02.zip",
+"size": 130733
+},
+{
+"id": "animal02",
+"title": "Animal 02",
+"license": "CC-BY",
+"url": "https://files.makehumancommunity.org/asset_packs/animal02/animal02_ccby.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/animal02/animal02_ccby.zip",
+"size": 629070
+},
+{
+"id": "animal03",
+"title": "Animal 03",
+"license": "CC-BY",
+"url": "https://files.makehumancommunity.org/asset_packs/animal03/animal03_ccby.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/animal03/animal03_ccby.zip",
+"size": 1814584
+},
+{
+"id": "animal04",
+"title": "Animal 04",
+"license": "CC-BY",
+"url": "https://files.makehumancommunity.org/asset_packs/animal04/animal04_ccby.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/animal04/animal04_ccby.zip",
+"size": 1141267
+},
+{
+"id": "bodyparts02",
+"title": "Bodyparts 02",
+"license": "CC-BY",
+"url": "https://files.makehumancommunity.org/asset_packs/bodyparts02/bodyparts02_cc-by.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/bodyparts02/bodyparts02_cc-by.zip",
+"size": 10831558
+},
+{
+"id": "bodyparts03",
+"title": "Bodyparts 03",
+"license": "CC-BY",
+"url": "https://files.makehumancommunity.org/asset_packs/bodyparts03/bodyparts03_cc-by.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/bodyparts03/bodyparts03_cc-by.zip",
+"size": 38804877
+},
+{
+"id": "bodyparts06",
+"title": "Bodyparts 06",
+"license": "CC-BY",
+"url": "https://files.makehumancommunity.org/asset_packs/bodyparts06/bodyparts06_cc-by.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/bodyparts06/bodyparts06_cc-by.zip",
+"size": 13015417
+},
+{
+"id": "dress02",
+"title": "Dress 02",
+"license": "CC-BY",
+"url": "https://files.makehumancommunity.org/asset_packs/dress02/dress02_cc-by.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/dress02/dress02_cc-by.zip",
+"size": 153083646
+},
+{
+"id": "dress03",
+"title": "Dress 03",
+"license": "CC-BY",
+"url": "https://files.makehumancommunity.org/asset_packs/dress03/dress03_cc-by.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/dress03/dress03_cc-by.zip",
+"size": 486395821
+},
+{
+"id": "equipment02",
+"title": "Equipment 02",
+"license": "CC-BY",
+"url": "https://files.makehumancommunity.org/asset_packs/equipment02/equipment02_cc-by.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/equipment02/equipment02_cc-by.zip",
+"size": 13391666
+},
+{
+"id": "equipment03",
+"title": "Equipment 03",
+"license": "CC-BY",
+"url": "https://files.makehumancommunity.org/asset_packs/equipment03/equipment03_cc-by.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/equipment03/equipment03_cc-by.zip",
+"size": 128076568
+},
+{
+"id": "glasses02",
+"title": "Glasses 02",
+"license": "CC-BY",
+"url": "https://files.makehumancommunity.org/asset_packs/glasses02/glasses02_ccby.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/glasses02/glasses02_ccby.zip",
+"size": 3301552
+},
+{
+"id": "hair02",
+"title": "Hair 02",
+"license": "CC-BY",
+"url": "https://files.makehumancommunity.org/asset_packs/hair02/hair02_ccby.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/hair02/hair02_ccby.zip",
+"size": 72283345
+},
+{
+"id": "hair03",
+"title": "Hair 03",
+"license": "CC-BY",
+"url": "https://files.makehumancommunity.org/asset_packs/hair03/hair03_ccby.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/hair03/hair03_ccby.zip",
+"size": 40087657
+},
+{
+"id": "hats03",
+"title": "Hats 03",
+"license": "CC-BY",
+"url": "https://files.makehumancommunity.org/asset_packs/hats03/hats03_cc-by.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/hats03/hats03_cc-by.zip",
+"size": 76001637
+},
+{
+"id": "hats04",
+"title": "Hats 04",
+"license": "CC-BY",
+"url": "https://files.makehumancommunity.org/asset_packs/hats04/hats04_cc-by.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/hats04/hats04_cc-by.zip",
+"size": 17907587
+},
+{
+"id": "masks02",
+"title": "Masks 02",
+"license": "CC-BY",
+"url": "https://files.makehumancommunity.org/asset_packs/masks02/masks02_ccby.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/masks02/masks02_ccby.zip",
+"size": 18149664
+},
+{
+"id": "pants02",
+"title": "Pants 02",
+"license": "CC-BY",
+"url": "https://files.makehumancommunity.org/asset_packs/pants02/pants02_ccby.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/pants02/pants02_ccby.zip",
+"size": 131847848
+},
+{
+"id": "pants03",
+"title": "Pants 03",
+"license": "CC-BY",
+"url": "https://files.makehumancommunity.org/asset_packs/pants03/pants03_ccby.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/pants03/pants03_ccby.zip",
+"size": 48825857
+},
+{
+"id": "shirts02",
+"title": "Shirts 02",
+"license": "CC-BY",
+"url": "https://files.makehumancommunity.org/asset_packs/shirts02/shirts02_ccby.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/shirts02/shirts02_ccby.zip",
+"size": 175395076
+},
+{
+"id": "shirts03",
+"title": "Shirts 03",
+"license": "CC-BY",
+"url": "https://files.makehumancommunity.org/asset_packs/shirts03/shirts03_ccby.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/shirts03/shirts03_ccby.zip",
+"size": 71659687
+},
+{
+"id": "shoes02",
+"title": "Shoes 02",
+"license": "CC-BY",
+"url": "https://files.makehumancommunity.org/asset_packs/shoes02/shoes02_ccby.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/shoes02/shoes02_ccby.zip",
+"size": 105745850
+},
+{
+"id": "shoes03",
+"title": "Shoes 03",
+"license": "CC-BY",
+"url": "https://files.makehumancommunity.org/asset_packs/shoes03/shoes03_ccby.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/shoes03/shoes03_ccby.zip",
+"size": 50300350
+},
+{
+"id": "skirts02",
+"title": "Skirts 02",
+"license": "CC-BY",
+"url": "https://files.makehumancommunity.org/asset_packs/skirts02/skirts02_cc-by.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/skirts02/skirts02_cc-by.zip",
+"size": 55608660
+},
+{
+"id": "suits03",
+"title": "Suits 03",
+"license": "CC-BY",
+"url": "https://files.makehumancommunity.org/asset_packs/suits03/suits03_cc-by.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/suits03/suits03_cc-by.zip",
+"size": 105317876
+},
+{
+"id": "underwear03",
+"title": "Underwear 03",
+"license": "CC-BY",
+"url": "https://files.makehumancommunity.org/asset_packs/underwear03/underwear03_cc-by.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/underwear03/underwear03_cc-by.zip",
+"size": 39976527
+},
+{
+"id": "faceunits01",
+"title": "Faceunits 01",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/functional/faceunits01.zip",
+"mirror": "https://files2.makehumancommunity.org/functional/faceunits01.zip",
+"size": 257821,
+"status": "builtin",
+"note": "Built in"
+},
+{
+"id": "makehuman_system_assets",
+"title": "MakeHuman system assets",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/makehuman_system_assets/makehuman_system_assets_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/makehuman_system_assets/makehuman_system_assets_cc0.zip",
+"size": 280737770,
+"status": "builtin",
+"note": "Built in (eyes, brows, lashes, hair, clothes, skins)"
+},
+{
+"id": "skins01",
+"title": "Skins 01 (natural female)",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/skins01/skins01_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/skins01/skins01_cc0.zip",
+"size": 104227958,
+"status": "builtin",
+"note": "Built in"
+},
+{
+"id": "haireditor",
+"title": "Hair editor",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/functional/haireditor.zip",
+"mirror": "https://files2.makehumancommunity.org/functional/haireditor.zip",
+"size": 18251712,
+"status": "unsupported",
+"note": "Blender-only hair, not usable on a phone"
+},
+{
+"id": "poses01",
+"title": "Poses 01",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/poses01/poses01_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/poses01/poses01_cc0.zip",
+"size": 1207533,
+"status": "unsupported",
+"note": "Poses: coming later"
+},
+{
+"id": "poses02",
+"title": "Poses 02",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/poses02/poses02_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/poses02/poses02_cc0.zip",
+"size": 1571660,
+"status": "unsupported",
+"note": "Poses: coming later"
+},
+{
+"id": "system_clothes_materials01",
+"title": "System clothes materials 01",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/system_clothes_materials01/system_clothes_materials01_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/system_clothes_materials01/system_clothes_materials01_cc0.zip",
+"size": 48153166,
+"status": "unsupported",
+"note": "Extra colours for built-in clothes: coming later"
+},
+{
+"id": "system_hair_materials01",
+"title": "System hair materials 01",
+"license": "CC0",
+"url": "https://files.makehumancommunity.org/asset_packs/system_hair_materials01/system_hair_materials01_cc0.zip",
+"mirror": "https://files2.makehumancommunity.org/asset_packs/system_hair_materials01/system_hair_materials01_cc0.zip",
+"size": 86848462,
+"status": "unsupported",
+"note": "Extra colours for built-in hair: coming later"
+}
+]

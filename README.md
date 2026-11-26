@@ -10,6 +10,8 @@ Make realistic adult human bodies on your phone and export them as rigged `.glb`
 - **Clothes:** 20 items (casual, elegant, sports and work suits, shoes, hats); the body under them is hidden
 - **Adult anatomy:** optional switch for genital shapes and skins (adults only)
 - **Export:** one `.glb` with a Mixamo-named skeleton in an A-pose, feet on the ground, skin weights, eyes, brows, lashes, teeth, tongue, hair and clothes, textures and normal maps embedded, and all 86 face shapes as blend shapes (neutral face by default). The body under the clothes is a separate `body_under_outfit` mesh so outfits can be swapped in a game.
+- **Ethnicity presets:** one-tap starting points (East, Southeast and South Asian, Middle Eastern, North, West and East African, Latin American, Indigenous American, Pacific Islander, Northern and Southern European, Mixed) built from the three base shapes plus gentle face adjustments and a matching skin
+- **Packs:** browse and download the MakeHuman community asset packs in the app (clothes, hair, beards, glasses, hats, skins, extra shape sliders, lip-sync visemes…), or import a pack `.zip` from your phone. CC-BY assets are credited on the Save tab and inside the exported `.glb`
 - Save and load characters as `.json`
 
 Controls: one finger turns, pinch zooms, two fingers move up and down, double-tap jumps between face and full body.
