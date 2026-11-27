@@ -531,7 +531,7 @@ class HeadSwapTest {
             }
             // without the app's eyes
             m.state.expression.clear(); m.rebuild()
-            val p2 = HeadSwap.Params().apply { appEyes = false }
+            val p2 = HeadSwap.Params().apply { appEyes = false; bodyToHead = true }
             HeadSwap.build(m, prep, p2, "h2", "Test head 2", tmp, dec, writer)
             m.state.customHead = "h2"
             File(out, "painted.glb").outputStream().use { GlbExporter.write(m, it, anims = emptyList(), faceShapes = false) }

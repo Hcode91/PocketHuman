@@ -1220,7 +1220,13 @@ class MainActivity : Activity() {
         slider("Left / right", p.side, -1f, 1f, { "%.1f cm".format(it * 10) }) { p.side = it; refreshHead() }
         slider("Nod", p.tilt, -30f, 30f, { "${it.toInt()}°" }) { p.tilt = it; refreshHead() }
         header("Skin")
-        slider("Match the head's skin tone to the body", p.skinMatch, 0f, 1f, ::pct) { p.skinMatch = it }
+        val mrow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        mrow.addView(chip("Head to body", !p.bodyToHead) { p.bodyToHead = false; headEditor() })
+        mrow.addView(chip("Body to head", p.bodyToHead) { p.bodyToHead = true; headEditor() })
+        content.addView(HorizontalScrollView(this).apply { addView(mrow) })
+        content.addView(TextView(this).apply { setTextColor(dim); textSize = 12f
+            text = if (p.bodyToHead) "The body is tinted to the head's skin tone (if you change the skin later, the body goes back to that skin)." else "The head's skin is tinted to the body's tone." })
+        slider("How closely to match", p.skinMatch, 0f, 1f, ::pct) { p.skinMatch = it }
         header("Eyes")
         content.addView(Switch(this).apply { text = "Put in the app's eyes and eyelids (they can blink and look around)"; setTextColor(fg); isChecked = p.appEyes
             setOnCheckedChangeListener { _, c -> p.appEyes = c; headEditor() } })

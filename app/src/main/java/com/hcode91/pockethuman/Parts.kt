@@ -55,7 +55,8 @@ object PartBuilder {
         }
         val nrm = weldedNormals(pos, bm.tris, n)
         val refs = bm.renderMap; val rw1 = FloatArray(n) { 1f }
-        val bodyTex = model.bodyTexture(skin)
+        // a replacement head made with "body to head" brings a tinted copy of this skin
+        val bodyTex = model.bodyTexture(skin).let { t -> if (head?.bodyTexture != null && head.bodySource == t) head.bodyTexture else t }
         out.add(Part("body", pos, nrm, bm.uv, vis.toIntArray(), bodyTex, false, skin.normal, j, w, refs, rw1, 1))
         if (lidTris.isNotEmpty()) out.add(Part("eyelids", pos, nrm, bm.uv, lidTris.toIntArray(), head!!.lidTexture!!, false, null, j, w, refs, rw1, 1))
         if (forExport && under.isNotEmpty())

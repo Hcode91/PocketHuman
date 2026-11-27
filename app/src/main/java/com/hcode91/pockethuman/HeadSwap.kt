@@ -24,7 +24,9 @@ class HeadData(
     val dispIdx: IntArray, val disp: FloatArray,                   // shrink-wrap of the PocketHuman head (moves the app eyes into the new head)
     val appEyes: Boolean,
     val lids: IntArray = IntArray(0),                              // app eyelid vertices kept (moved into the new head) so the eyes can blink
-    val lidTexture: String? = null                                 // the body skin tinted to the new face, for those eyelids
+    val lidTexture: String? = null,                                // the body skin tinted to the new face, for those eyelids
+    val bodyTexture: String? = null,                               // the body skin tinted to the new head's tone ("body to head")
+    val bodySource: String? = null                                 // ...made from this skin texture (used only while it's still the skin)
 ) {
     val n get() = uv.size / 2
     /** welded neighbours of each vertex (for smoothing the normals of noisy AI surfaces) */
@@ -43,15 +45,16 @@ object HeadSwap {
     class Params {
         var turn = 0                       // x90° about the vertical
         var size = 1f; var up = 0f; var forward = 0f; var side = 0f; var tilt = 0f
-        var skinMatch = 1f                 // 0..1, how far to pull the head's skin tone to the body's
+        var skinMatch = 1f                 // 0..1, how far to pull the skin tones together
+        var bodyToHead = false             // true: tint the body to the head instead of the head to the body
         var appEyes = true
         var eyeUp = 0f; var eyeApart = 0f; var eyeDepth = 0f   // fine-tuning of where the app's eyes sit (dm)
         var lidShade = 0.82f                                  // brightness of the app's eyelids against the new face
         fun toJson() = JSONObject().put("turn", turn).put("size", size.toDouble()).put("up", up.toDouble()).put("forward", forward.toDouble())
-            .put("side", side.toDouble()).put("tilt", tilt.toDouble()).put("skinMatch", skinMatch.toDouble()).put("appEyes", appEyes)
+            .put("side", side.toDouble()).put("tilt", tilt.toDouble()).put("skinMatch", skinMatch.toDouble()).put("bodyToHead", bodyToHead).put("appEyes", appEyes)
             .put("eyeUp", eyeUp.toDouble()).put("eyeApart", eyeApart.toDouble()).put("eyeDepth", eyeDepth.toDouble()).put("lidShade", lidShade.toDouble())
         fun load(j: JSONObject) { turn = j.optInt("turn"); size = j.optDouble("size", 1.0).toFloat(); up = j.optDouble("up").toFloat(); forward = j.optDouble("forward").toFloat()
-            side = j.optDouble("side").toFloat(); tilt = j.optDouble("tilt").toFloat(); skinMatch = j.optDouble("skinMatch", 1.0).toFloat(); appEyes = j.optBoolean("appEyes", true)
+            side = j.optDouble("side").toFloat(); tilt = j.optDouble("tilt").toFloat(); skinMatch = j.optDouble("skinMatch", 1.0).toFloat(); bodyToHead = j.optBoolean("bodyToHead"); appEyes = j.optBoolean("appEyes", true)
             eyeUp = j.optDouble("eyeUp").toFloat(); eyeApart = j.optDouble("eyeApart").toFloat(); eyeDepth = j.optDouble("eyeDepth").toFloat(); lidShade = j.optDouble("lidShade", 0.82).toFloat() }
     }
 
@@ -164,7 +167,7 @@ object HeadSwap {
             // shoulder tops and straps that reach above the cut, out to the sides
             if (gy < chinY && gy < neckY + 0.35f / scale && Math.abs(gx - cx) > 0.95f / scale) continue
             // below the chin, nothing that hangs in front of the neck (collars, ties, a raised hand)
-            if (gy < chinY && gz > front + 0.15f / scale) continue
+            if (gy < neckY && gz > front + 0.15f / scale) continue
             keepTri[tI] = true
             val ra = find(grp[a]); val rb = find(grp[b]); val rc = find(grp[c]); parent[rb] = ra; parent[find(rc)] = ra
         }
@@ -443,13 +446,13 @@ object HeadSwap {
         // --- texture: skin tone matched to the body, neck seam faded into the body's colour
         progress("Matching the skin…")
         val dir = File(filesDir, "imported/my_heads/$id").apply { deleteRecursively(); mkdirs() }
-        var lidTex: String? = null
+        var lidTex: String? = null; var bodyTexOut: String? = null; var bodySrc: String? = null
         val texName = run {
             if (img == null) { File(dir, "texture.png").writeBytes(OutfitDraft.GREY_PNG); "texture.png" }
             else {
                 val (tw, th, px) = img
                 val skinTex = model.bodyTexture(lib.skins[model.state.skin.coerceIn(0, lib.skins.size - 1)])
-                val sk = runCatching { decoder.decode(lib.am.bytes(skinTex)) }.getOrNull()
+                var sk = runCatching { decoder.decode(lib.am.bytes(skinTex)) }.getOrNull()
                 // a body UV for each base vertex
                 val buv = FloatArray(nV * 2) { -1f }
                 for (r in bm.renderMap.indices) { val b = bm.renderMap[r]; if (buv[b * 2] < 0) { buv[b * 2] = bm.uv[r * 2]; buv[b * 2 + 1] = bm.uv[r * 2 + 1] } }
@@ -469,8 +472,21 @@ object HeadSwap {
                 }
                 debug?.invoke("skin match: tex $skinTex head ${mHead.map { it / maxOf(cnt, 1) }} body ${mBody.map { it / maxOf(cnt, 1) }} n $cnt")
                 val gain = FloatArray(3) { k -> if (cnt < 10) 1f else (1f + ((mBody[k] / mHead[k].coerceAtLeast(1.0)).toFloat() - 1f) * p.skinMatch).coerceIn(0.5f, 2f) }
-                // tone shift on skin-coloured pixels only (eyes, lips, hair keep theirs mostly)
-                if (cnt >= 10 && p.skinMatch > 0f) for (i in px.indices) {
+                // body to head: the body skin is tinted instead (a copy of it, kept with the head), and the seam fades
+                // into that tinted colour
+                // (sk is replaced by the tinted copy below when the body is tinted)
+                if (p.bodyToHead && sk != null && cnt >= 10 && p.skinMatch > 0f) {
+                    val bg = FloatArray(3) { k -> (1f + ((mHead[k] / mBody[k].coerceAtLeast(1.0)).toFloat() - 1f) * p.skinMatch).coerceIn(0.4f, 2.5f) }
+                    val (sw, shh, sp) = sk
+                    val tinted = IntArray(sp.size) { i -> val c = sp[i]; var o2 = c and 0xff000000.toInt()
+                        for (k in 0..2) o2 = o2 or ((((c shr (16 - 8 * k)) and 255) * bg[k]).toInt().coerceIn(0, 255) shl (16 - 8 * k)); o2 }
+                    bodyTexOut = "imported/my_heads/$id/" + writer.write(tinted, sw, shh, dir, "body"); bodySrc = skinTex
+                    sk = Triple(sw, shh, tinted)
+                    for (i in 0 until nm) { var o2 = bodyCol[i] and 0xff000000.toInt()
+                        for (k in 0..2) o2 = o2 or ((((bodyCol[i] shr (16 - 8 * k)) and 255) * bg[k]).toInt().coerceIn(0, 255) shl (16 - 8 * k)); bodyCol[i] = o2 }
+                }
+                // head to body: tone shift on skin-coloured pixels only (eyes, lips, hair keep theirs mostly)
+                if (!p.bodyToHead && cnt >= 10 && p.skinMatch > 0f) for (i in px.indices) {
                     val c = px[i]; if (!OutfitDraft.isSkinColour(c, 0.8f)) continue
                     var o2 = c and 0xff000000.toInt()
                     for (k in 0..2) o2 = o2 or ((((c shr (16 - 8 * k)) and 255) * gain[k]).toInt().coerceIn(0, 255) shl (16 - 8 * k))
@@ -541,7 +557,7 @@ object HeadSwap {
         val data = HeadData(id, name,
             IntArray(nu * 3) { refs[idx[it / 3] * 3 + it % 3] }, FloatArray(nu * 3) { rw[idx[it / 3] * 3 + it % 3] }, FloatArray(nu * 3) { off[idx[it / 3] * 3 + it % 3] },
             FloatArray(nu * 2) { prep.uv[idx[it / 2] * 2 + it % 2] }, IntArray(tris.size) { used[tris[it]] },
-            "imported/my_heads/$id/$texName", hidden, dIdx, dVal, p.appEyes, lidList.toIntArray(), lidTex)
+            "imported/my_heads/$id/$texName", hidden, dIdx, dVal, p.appEyes, lidList.toIntArray(), lidTex, bodyTexOut, bodySrc)
         HeadStore.save(filesDir, data, p)
         return data
     }
@@ -630,7 +646,7 @@ object HeadStore {
         bb.putInt(d.dispIdx.size); d.dispIdx.forEach { bb.putInt(it) }; d.disp.forEach { bb.putFloat(it) }
         bb.putInt(d.lids.size); d.lids.forEach { bb.putInt(it) }
         File(dir, "head.bin").writeBytes(bb.array())
-        File(dir, "head.json").writeText(JSONObject().put("name", d.name).put("texture", d.texture).put("lidTexture", d.lidTexture ?: JSONObject.NULL).put("appEyes", d.appEyes).put("params", p.toJson()).toString())
+        File(dir, "head.json").writeText(JSONObject().put("name", d.name).put("texture", d.texture).put("lidTexture", d.lidTexture ?: JSONObject.NULL).put("bodyTexture", d.bodyTexture ?: JSONObject.NULL).put("bodySource", d.bodySource ?: JSONObject.NULL).put("appEyes", d.appEyes).put("params", p.toJson()).toString())
     }
 
     fun load(filesDir: File, id: String): HeadData? = runCatching {
@@ -641,7 +657,8 @@ object HeadStore {
         val tris = IntArray(bb.int) { bb.int }; val hidden = IntArray(bb.int) { bb.int }
         val nd = bb.int; val di = IntArray(nd) { bb.int }; val dv = FloatArray(nd * 3) { bb.float }
         val lids = if (bb.remaining() >= 4) IntArray(bb.int) { bb.int } else IntArray(0)
-        HeadData(id, meta.optString("name", id), refs, w, off, uv, tris, meta.getString("texture"), hidden, di, dv, meta.optBoolean("appEyes", false), lids, if (meta.isNull("lidTexture")) null else meta.optString("lidTexture").ifEmpty { null })
+        HeadData(id, meta.optString("name", id), refs, w, off, uv, tris, meta.getString("texture"), hidden, di, dv, meta.optBoolean("appEyes", false), lids, if (meta.isNull("lidTexture")) null else meta.optString("lidTexture").ifEmpty { null },
+            if (!meta.has("bodyTexture") || meta.isNull("bodyTexture")) null else meta.optString("bodyTexture"), if (!meta.has("bodySource") || meta.isNull("bodySource")) null else meta.optString("bodySource"))
     }.getOrNull()
 
     fun list(filesDir: File): List<Pair<String, String>> =
