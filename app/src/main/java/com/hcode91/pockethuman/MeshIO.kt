@@ -121,8 +121,12 @@ object MeshIO {
         // texture bytes
         var tex: ByteArray? = null; var extn = "png"
         if (texIndex >= 0) {
-            val img = json.getJSONArray("images").getJSONObject(json.getJSONArray("textures").getJSONObject(texIndex).getInt("source"))
-            extn = if (img.optString("mimeType").contains("jpeg")) "jpg" else "png"
+            // the image may be named by an extension instead (WebP / KTX2 / DDS textures)
+            val tj = json.getJSONArray("textures").getJSONObject(texIndex)
+            val src = if (tj.has("source")) tj.getInt("source") else tj.optJSONObject("extensions")?.let { e -> e.keys().asSequence().mapNotNull { k -> e.optJSONObject(k)?.optInt("source", -1)?.takeIf { it >= 0 } }.firstOrNull() } ?: 0
+            val img = json.getJSONArray("images").getJSONObject(src)
+            val mime = img.optString("mimeType")
+            extn = if (mime.contains("jpeg")) "jpg" else if (mime.contains("webp")) "webp" else "png"
             if (img.has("bufferView")) { val v = view(img.getInt("bufferView")); tex = ByteArray(v.remaining()).also { v.get(it) } }
             else img.optString("uri").takeIf { it.startsWith("data:") }?.let { tex = java.util.Base64.getDecoder().decode(it.substringAfter(",")) }
         }

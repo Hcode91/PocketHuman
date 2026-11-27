@@ -30,6 +30,8 @@ class HumanState {
     var anatomyTint = true
     /** an imported model used as the character instead of the PocketHuman body (id in imported/my_models), or null */
     var customModel: String? = null
+    /** a head from a 3D model in place of the PocketHuman head (id in imported/my_heads), or null */
+    var customHead: String? = null
     /** animation clips to include in the export */
     val anims = ArrayList(DEFAULT_ANIMS)
     val clothes = LinkedHashSet<String>()
@@ -50,7 +52,7 @@ class HumanState {
         put("format", "pockethuman"); put("version", 1); put("name", name)
         put("macro", JSONObject(macro as Map<*, *>)); put("race", JSONObject(race as Map<*, *>)); put("details", JSONObject(details as Map<*, *>))
         put("skin", skin); put("eyeColour", eyeColour); put("eyebrows", eyebrows ?: ""); put("eyelashes", eyelashes ?: ""); put("hair", hair ?: "")
-        put("hairVariant", hairVariant); put("adult", adult); put("autoSkin", autoSkin); put("genitals", genitals); put("genitalDetail", genitalDetail); put("anatomyTint", anatomyTint); put("customModel", customModel ?: JSONObject.NULL); put("anims", org.json.JSONArray(anims))
+        put("hairVariant", hairVariant); put("adult", adult); put("autoSkin", autoSkin); put("genitals", genitals); put("genitalDetail", genitalDetail); put("anatomyTint", anatomyTint); put("customModel", customModel ?: JSONObject.NULL); put("customHead", customHead ?: JSONObject.NULL); put("anims", org.json.JSONArray(anims))
         put("clothes", org.json.JSONArray(clothes.toList()))
     }
     fun load(j: JSONObject) {
@@ -62,6 +64,7 @@ class HumanState {
         eyebrows = j.optString("eyebrows").ifEmpty { null }; eyelashes = j.optString("eyelashes").ifEmpty { null }; hair = j.optString("hair").ifEmpty { null }
         name = j.optString("name", "Character")
         adult = j.optBoolean("adult", false); autoSkin = j.optBoolean("autoSkin", true); genitals = j.optInt("genitals", 0); genitalDetail = j.optInt("genitalDetail", 0); anatomyTint = j.optBoolean("anatomyTint", true); customModel = if (j.isNull("customModel")) null else j.optString("customModel").ifEmpty { null }
+        customHead = if (!j.has("customHead") || j.isNull("customHead")) null else j.optString("customHead").ifEmpty { null }
         anims.clear(); j.optJSONArray("anims")?.let { a -> for (i in 0 until a.length()) anims.add(a.getString(i)) } ?: anims.addAll(DEFAULT_ANIMS)
         clothes.clear(); j.optJSONArray("clothes")?.let { a -> for (i in 0 until a.length()) clothes.add(a.getString(i)) }
         expression.clear()
@@ -87,6 +90,15 @@ class HumanModel(val lib: Library) {
         return loaded
     }
 
+    /** The replacement head when [HumanState.customHead] is set (loaded through [headLoader], cached). */
+    private var headId: String? = null; private var headData: HeadData? = null
+    val customHead: HeadData? get() {
+        val id = state.customHead ?: return null
+        if (id != headId) { headData = runCatching { headLoader?.invoke(id) }.getOrNull(); headId = id }
+        return headData
+    }
+    fun forgetHead() { headId = null; headData = null }
+
     /** Texture for an anatomy piece: tinted to the skin unless the user turned that off. */
     fun anatomyTexture(tex: String, skin: Skin): String =
         if (!state.anatomyTint) tex else runCatching { tintProvider?.invoke(lib, tex, skin.texture) }.getOrNull() ?: tex
@@ -97,6 +109,8 @@ class HumanModel(val lib: Library) {
         /** Set by the app: (library, piece texture, skin texture) -> tinted copy of the piece texture. */
         /** Set by the app: loads an imported model by id (see ModelStore). */
         @Volatile var modelLoader: ((String) -> Part?)? = null
+        /** Set by the app: loads a replacement head by id (see HeadStore). */
+        @Volatile var headLoader: ((String) -> HeadData?)? = null
         @Volatile var tintProvider: ((Library, String, String) -> String?)? = null
     }
     /** Shape with the preview expression applied (what the app shows). */

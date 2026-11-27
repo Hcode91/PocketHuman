@@ -454,3 +454,86 @@ class SceneTest {
         assertEquals("Sitting_Idle_Loop", back.pose.clip); assertEquals(0.45f, back.y, 1e-4f)
     }
 }
+
+class SceneCastTest {
+    @Test fun exportsSayoAndRen() {
+        val tmp = java.nio.file.Files.createTempDirectory("phsc2").toFile()
+        val copy = TextureSink { s, dir, base, _ -> dir.mkdirs(); val n = base + "." + s.extension.lowercase(); s.copyTo(File(dir, n), true); n }
+        val fetch: (String) -> ByteArray = { u -> java.net.URL(u).openStream().use { it.readBytes() } }
+        val all = org.json.JSONArray(File("src/main/assets/ph/community.json").readText())
+        val tunicEntry = (0 until all.length()).map { all.getJSONObject(it) }.first { it.getInt("n") == 2617 }
+        println("tunic: " + runCatching { CommunityImporter(tmp, copy, fetch).install(tunicEntry) {} }.fold({ "ok" }, { "FAIL ${it.message}" }))
+        val src = AssetSource { p -> if (p.startsWith("imported/")) File(tmp, p).readBytes() else File("src/main/assets/ph", p).readBytes() }
+        val lib = Library(src, tmp)
+        val out = File("/tmp/scene_cast").apply { mkdirs() }
+        val sayo = HumanModel(lib).apply { state.name = "Sayo"
+            state.macro["gender"] = 0f; state.macro["age"] = 0.56f; state.macro["muscle"] = 0.58f; state.macro["weight"] = 0.45f; state.macro["height"] = 0.55f
+            state.setRace("caucasian", 0.8f); state.setRace("asian", 0.15f)
+            state.hair = "hair_ponytail01"; state.eyebrows = "eyebrows_eyebrow002"; state.eyeColour = 2
+            state.clothes.add("clothes_female_casualsuit01"); state.clothes.add("clothes_shoes03")
+            state.skin = lib.skins.indexOfFirst { it.name.contains("young eurasian female") }.takeIf { it >= 0 } ?: matchSkin(); state.autoSkin = false; rebuild() }
+        val ren = HumanModel(lib).apply { state.name = "Ren"
+            state.macro["gender"] = 1f; state.macro["age"] = 0.58f; state.macro["muscle"] = 0.62f; state.macro["height"] = 0.55f; state.setRace("asian", 0.9f)
+            state.hair = "hair_short02"; state.clothes.add("clothes_male_casualsuit03"); state.clothes.add("clothes_shoes02")
+            state.skin = matchSkin(); rebuild() }
+        for (m in listOf(sayo, ren)) {
+            File(out, m.state.name.lowercase() + ".glb").outputStream().use { GlbExporter.write(m, it, anims = listOf("Idle_Loop")) }
+            File(out, m.state.name.lowercase() + ".pockethuman.json").writeText(m.state.toJson().toString(2))
+            println("${m.state.name}: age ${m.ageYears()} ${File(out, m.state.name.lowercase() + ".glb").length() / 1024} KB skin ${lib.skins[m.state.skin].name}")
+        }
+    }
+}
+
+class HeadSwapTest {
+    @Test fun replacesHead() {
+        val src = File(System.getProperty("headsrc") ?: "/tmp/headsrc.glb"); if (!src.exists()) return
+        val tmp = java.nio.file.Files.createTempDirectory("phh").toFile()
+        val ct = CharacterTest()
+        val dec = ImageDecoder { b -> val inF = File.createTempFile("img", ".bin").apply { writeBytes(b) }; val outF = File.createTempFile("img", ".raw")
+            ProcessBuilder("python3", "-c", "import sys,struct;from PIL import Image;im=Image.open(sys.argv[1]).convert('RGBA');w,h=im.size;open(sys.argv[2],'wb').write(struct.pack('<II',w,h)+im.tobytes())", inF.path, outF.path).inheritIO().start().waitFor()
+            val r = outF.readBytes(); if (r.size < 8) null else { val bb = java.nio.ByteBuffer.wrap(r).order(java.nio.ByteOrder.LITTLE_ENDIAN); val w = bb.int; val h = bb.int
+                Triple(w, h, IntArray(w * h) { i -> val o = 8 + i * 4; ((r[o + 3].toInt() and 255) shl 24) or ((r[o].toInt() and 255) shl 16) or ((r[o + 1].toInt() and 255) shl 8) or (r[o + 2].toInt() and 255) }) } }
+        val writer = ImageWriter { a, w, h, dir, base -> dir.mkdirs(); File(dir, "$base.png").writeBytes(ct.png(a, w, h)); "$base.png" }
+        val srcOf = AssetSource { p -> if (p.startsWith("imported/")) File(tmp, p).readBytes() else File("src/main/assets/ph", p).readBytes() }
+        val lib = Library(srcOf, tmp)
+        val m = HumanModel(lib).apply { state.macro["gender"] = 0f; state.macro["age"] = 0.56f; state.clothes.add("clothes_female_casualsuit01"); rebuild() }
+        var raw = MeshIO.load(src); if (raw.tris.size / 3 > 200000) raw = MeshIO.simplify(raw, 150000)
+        val t0 = System.currentTimeMillis()
+        HeadSwap.debug = { println(it) }
+        val prep = HeadSwap.prepare(raw, 0, m)
+        println("head: ${prep.n} verts ${prep.tris.size / 3} tris full=${prep.full} prep ${System.currentTimeMillis() - t0} ms")
+        val p = HeadSwap.Params()
+        val d = HeadSwap.build(m, prep, p, "h1", "Test head", tmp, dec, writer) { println(it) }
+        println("built: ${d.n} verts, hidden ${d.hidden.size}, wrapped ${d.dispIdx.size}, total ${System.currentTimeMillis() - t0} ms")
+        HumanModel.headLoader = { id -> HeadStore.load(tmp, id) }
+        try {
+            m.state.customHead = "h1"
+            val parts = PartBuilder.build(m, false).map { it.name }; println("parts: $parts")
+            assertTrue("head" in parts); assertTrue("hair_ponytail01" !in parts)
+            val out = File("/tmp/headswap").apply { mkdirs() }
+            run {
+                val hd = HeadStore.load(tmp, "h1")!!
+                val n0 = HeadSwap.part(m, hd, m.neutral, false).pos
+                m.state.expression["mh:eye-left-closure"] = 1f; m.rebuild()
+                val n1 = HeadSwap.part(m, hd, m.verts, false).pos
+                var mx = 0f; var cnt = 0; for (i in 0 until hd.n) { var d = 0f; for (k in 0..2) d += (n1[i*3+k]-n0[i*3+k]).let { it*it }; d = Math.sqrt(d.toDouble()).toFloat(); mx = maxOf(mx, d); if (d > 0.02f) cnt++ }
+                var am = 0f; for (i in 0 until 13380) { var d = 0f; for (k in 0..2) d += (m.verts[i*3+k]-m.neutral[i*3+k]).let { it*it }; am = maxOf(am, Math.sqrt(d.toDouble()).toFloat()) }
+                println("blink: head max move $mx, moved verts $cnt; app max move $am")
+                m.state.expression.clear(); m.rebuild()
+            }
+            File(out, "neutral.glb").outputStream().use { GlbExporter.write(m, it, anims = emptyList()) }
+            for ((nm, ex) in listOf("smile" to mapOf("mh:mouth-corner-puller" to 0.9f, "mh:eye-left-slit" to 0.3f, "mh:eye-right-slit" to 0.3f),
+                                     "blink" to mapOf("mh:eye-left-closure" to 1f, "mh:eye-right-closure" to 1f),
+                                     "open" to mapOf("mh:mouth-open" to 0.7f, "mh:eyebrows-left-up" to 1f, "mh:eyebrows-right-up" to 1f))) {
+                m.state.expression.clear(); m.state.expression.putAll(ex); m.rebuild()
+                File(out, "$nm.glb").outputStream().use { GlbExporter.write(m, it, only = PartBuilder.build(m, true, withExpression = true), anims = emptyList(), faceShapes = false) }
+            }
+            // without the app's eyes
+            m.state.expression.clear(); m.rebuild()
+            val p2 = HeadSwap.Params().apply { appEyes = false }
+            HeadSwap.build(m, prep, p2, "h2", "Test head 2", tmp, dec, writer)
+            m.state.customHead = "h2"
+            File(out, "painted.glb").outputStream().use { GlbExporter.write(m, it, anims = emptyList(), faceShapes = false) }
+        } finally { HumanModel.headLoader = null }
+    }
+}

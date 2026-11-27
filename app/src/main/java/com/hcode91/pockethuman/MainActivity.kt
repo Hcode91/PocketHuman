@@ -38,6 +38,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         HumanModel.modelLoader = { id -> ModelStore.load(filesDir, id) }
+        HumanModel.headLoader = { id -> HeadStore.load(filesDir, id) }
         HumanModel.tintProvider = { l, tex, skinTex -> synchronized(this) { GenitalDetail.tintedToSkin(l, tex, skinTex, filesDir, AndroidImageDecoder, AndroidImageWriter) } }
         HumanModel.detailProvider = { l, tex -> synchronized(this) { GenitalDetail.skinWithDetail(l, tex, filesDir, AndroidImageDecoder, AndroidImageWriter) } }
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -100,7 +101,7 @@ class MainActivity : Activity() {
             dirty.set(false)
             model.rebuild()
             val parts = PartBuilder.build(model, false)
-            runOnUiThread { if (draft == null && tab != "Scene") view3d.show(parts); updateInfo() }
+            runOnUiThread { if (draft == null && headPrep == null && tab != "Scene") view3d.show(parts); updateInfo() }
         }
     }
     private fun updateInfo() {
@@ -282,6 +283,7 @@ class MainActivity : Activity() {
                 lib.skins.forEachIndexed { i, sk -> if (!sk.adult || s.adult) option(sk.name, s.skin == i) { s.skin = i; s.autoSkin = false } }
             }
             "Face" -> {
+                if (s.customModel == null) headSection(s)
                 header("Preview an expression (exports keep a neutral face, with every shape included as a blend shape)")
                 val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
                 for ((name, set) in presets) row.addView(chip(name, false) { s.expression.clear(); s.expression.putAll(set); changed(); showTab("Face") })
@@ -1128,6 +1130,131 @@ class MainActivity : Activity() {
         }
     }
 
+    // ------------------------------------------------------------------ replacement head from a 3D model
+    private var headRaw: RawMesh? = null; private var headPrep: HeadSwap.Prepared? = null
+    private var headParams = HeadSwap.Params(); private var headName = "Head"; private var headPreviewTex: String? = null
+    private var headBody: List<Part> = emptyList()
+    private val headDirty = AtomicBoolean(false)
+
+    private fun headSection(s: HumanState) {
+        header("Head")
+        s.customHead?.let { id ->
+            content.addView(TextView(this).apply { setTextColor(dim); textSize = 13f; setPadding(0, 0, 0, dp(6))
+                text = "Using a head from a 3D model: ${model.customHead?.name ?: id}. It moves with the skeleton and these expressions, in the app and in exports." })
+            button("Back to the PocketHuman head") { s.customHead = null; changed(); saveLast(); showTab("Face") }
+        }
+        button("Replace the head with one from a 3D model (.glb / .obj)") {
+            startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "*/*" }, REQ_HEAD)
+        }
+        for ((hid, hname) in HeadStore.list(filesDir)) {
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            val on = s.customHead == hid
+            row.addView(TextView(this).apply { text = (if (on) "●  " else "○  ") + hname; textSize = 15f; setTextColor(if (on) accent else fg); setPadding(dp(4), dp(10), dp(4), dp(10))
+                setOnClickListener { s.customHead = if (on) null else hid; model.forgetHead(); changed(); saveLast(); showTab("Face") } }, LinearLayout.LayoutParams(0, -2, 1f))
+            row.addView(TextView(this).apply { text = "Delete"; setTextColor(accent); textSize = 14f; setPadding(dp(12), dp(10), dp(12), dp(10))
+                setOnClickListener { AlertDialog.Builder(this@MainActivity).setMessage("Delete $hname?").setPositiveButton("Delete") { _, _ ->
+                    if (s.customHead == hid) s.customHead = null; HeadStore.delete(filesDir, hid); model.forgetHead(); changed(); saveLast(); showTab("Face") }.setNegativeButton("Cancel", null).show() } })
+            content.addView(row)
+        }
+    }
+
+    private fun startHeadImport(f: java.io.File) {
+        val wait = AlertDialog.Builder(this).setMessage("Loading model…").setCancelable(false).show()
+        if (model.state.customModel != null) { model.state.customModel = null }
+        // fitting needs the neutral face and the PocketHuman head
+        model.state.expression.clear(); model.state.customHead = null; model.rebuild()
+        worker.execute {
+            val r = runCatching {
+                var m = MeshIO.load(f); if (m.tris.size / 3 > 200000) m = MeshIO.simplify(m, 150000)
+                headRaw = m; headParams = HeadSwap.Params()
+                headName = f.nameWithoutExtension.replace("Meshy_AI_", "").replace(Regex("_\\d{8}.*$"), "").replace('_', ' ').take(40).ifBlank { "Head" }
+                headPrep = HeadSwap.prepare(m, 0, model)
+                val dir = java.io.File(filesDir, "imported/my_heads/preview").apply { deleteRecursively(); mkdirs() }
+                val stamp = System.currentTimeMillis().toString(36)     // a new name each time: the 3D view keeps textures by name
+                headPreviewTex = if (m.texture != null) { java.io.File(dir, "tex$stamp.${m.textureExt}").writeBytes(m.texture); "imported/my_heads/preview/tex$stamp.${m.textureExt}" }
+                    else { java.io.File(dir, "grey.png").writeBytes(OutfitDraft.GREY_PNG); "imported/my_heads/preview/grey.png" }
+                val ref = HeadSwap.appRef(model)
+                val hide = BooleanArray(lib.base.nV); HeadSwap.hiddenVerts(model, ref).forEach { hide[it] = true }
+                val st = model.state
+                headBody = PartBuilder.build(model, false, hide, setOfNotNull(st.hair, st.eyebrows, st.eyelashes, "eyes_high-poly", "teeth_teeth_base", "tongue_tongue01"))
+            }
+            runOnUiThread { wait.dismiss(); r.onSuccess { tabBar.visibility = View.GONE; headEditor(); refreshHead() }
+                .onFailure { AlertDialog.Builder(this).setTitle("Couldn't use that model").setMessage(it.message ?: it.toString()).setPositiveButton("OK", null).show(); changed() } }
+        }
+    }
+
+    private fun refreshHead() {
+        if (headDirty.getAndSet(true)) return
+        worker.execute {
+            headDirty.set(false)
+            val prep = headPrep ?: return@execute
+            val pos = HeadSwap.place(prep, HeadSwap.appRef(model), headParams)
+            val part = Part("head_preview", pos, weldedNormals(pos, prep.tris, prep.n), prep.uv, prep.tris, headPreviewTex!!, false, null, IntArray(0), FloatArray(0), IntArray(0), FloatArray(0), 0)
+            runOnUiThread { if (headPrep != null) view3d.show(headBody + part) }
+        }
+    }
+
+    private fun closeHeadEditor() { headRaw = null; headPrep = null; headBody = emptyList(); tabBar.visibility = View.VISIBLE; showTab("Face"); changed() }
+
+    private fun headEditor() {
+        content.removeAllViews()
+        val p = headParams
+        content.addView(TextView(this).apply { text = "Line up the new head"; setTextColor(accent); textSize = 17f; typeface = Typeface.DEFAULT_BOLD; setPadding(0, dp(8), 0, dp(4)) })
+        content.addView(TextView(this).apply { setTextColor(dim); textSize = 12f
+            text = "The head has been cut off at the neck and placed on the body. Adjust it until the neck lines up, then tap Make the head. Its skin is matched to the body and the neck seam is blended in." })
+        content.addView(EditText(this).apply { setText(headName); setTextColor(fg); inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_WORDS
+            addTextChangedListener(object : android.text.TextWatcher {
+                override fun afterTextChanged(e: android.text.Editable?) { headName = e.toString().ifBlank { "Head" } }
+                override fun beforeTextChanged(a: CharSequence?, b: Int, c: Int, e: Int) {}; override fun onTextChanged(a: CharSequence?, b: Int, c: Int, e: Int) {} }) })
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        row.addView(chip("Turn 90°", false) {
+            p.turn = (p.turn + 1) % 4; val raw = headRaw ?: return@chip
+            worker.execute { val pr = runCatching { HeadSwap.prepare(raw, p.turn, model) }.getOrNull(); runOnUiThread { if (pr != null) { headPrep = pr; refreshHead() } else toast("Couldn't find a head facing that way") } }
+        })
+        row.addView(chip("Reset", false) { val t = p.turn; headParams = HeadSwap.Params().apply { turn = t }; headEditor(); refreshHead() })
+        content.addView(HorizontalScrollView(this).apply { addView(row) })
+        slider("Size", p.size, 0.6f, 1.6f, ::pct) { p.size = it; refreshHead() }
+        slider("Up / down", p.up, -1.5f, 1.5f, { "%.1f cm".format(it * 10) }) { p.up = it; refreshHead() }
+        slider("Forward / back", p.forward, -1f, 1f, { "%.1f cm".format(it * 10) }) { p.forward = it; refreshHead() }
+        slider("Left / right", p.side, -1f, 1f, { "%.1f cm".format(it * 10) }) { p.side = it; refreshHead() }
+        slider("Nod", p.tilt, -30f, 30f, { "${it.toInt()}°" }) { p.tilt = it; refreshHead() }
+        header("Skin")
+        slider("Match the head's skin tone to the body", p.skinMatch, 0f, 1f, ::pct) { p.skinMatch = it }
+        header("Eyes")
+        content.addView(Switch(this).apply { text = "Put in the app's eyes and eyelids (they can blink and look around)"; setTextColor(fg); isChecked = p.appEyes
+            setOnCheckedChangeListener { _, c -> p.appEyes = c; headEditor() } })
+        if (p.appEyes) {
+            content.addView(TextView(this).apply { setTextColor(dim); textSize = 12f
+                text = "They're placed over the painted eyes automatically. If they end up off, nudge them here and make the head again." })
+            slider("Eyes up / down", p.eyeUp, -0.6f, 0.6f, { "%.1f cm".format(it * 10) }) { p.eyeUp = it }
+            slider("Eyes apart", p.eyeApart, -0.4f, 0.4f, { "%.1f cm".format(it * 10) }) { p.eyeApart = it }
+            slider("Eyes in / out", p.eyeDepth, -0.4f, 0.4f, { "%.1f cm".format(it * 10) }) { p.eyeDepth = it }
+        } else content.addView(TextView(this).apply { setTextColor(dim); textSize = 12f; text = "The painted eyes stay. Smiles, brows and lips still move; blinking won't look right." })
+        button("Make the head") { makeHead() }
+        button("Cancel") { closeHeadEditor() }
+    }
+
+    private fun makeHead() {
+        val prep = headPrep ?: return
+        val msg = TextView(this).apply { text = "Fitting the head…"; setTextColor(fg); setPadding(dp(24), dp(20), dp(24), dp(20)) }
+        val dlg = AlertDialog.Builder(this).setView(msg).setCancelable(false).show()
+        val id = "h" + System.currentTimeMillis().toString(36)
+        val name = headName; val p = headParams
+        worker.execute {
+            val r = runCatching {
+                HeadSwap.build(model, prep, p, id, name, filesDir, AndroidImageDecoder, AndroidImageWriter) { line -> runOnUiThread { msg.text = line } }
+            }
+            runOnUiThread {
+                dlg.dismiss()
+                r.onSuccess {
+                    model.state.customHead = id; model.forgetHead()
+                    java.io.File(filesDir, "imported/my_heads/preview").deleteRecursively()
+                    view3d.reload(lib); closeHeadEditor(); saveLast(); toast("$name is on. Try the expressions below.")
+                }.onFailure { AlertDialog.Builder(this).setTitle("Couldn't make the head").setMessage(it.message ?: it.toString()).setPositiveButton("OK", null).show() }
+            }
+        }
+    }
+
     private fun runImport(title: String, open: ((String) -> Unit) -> java.io.InputStream, id: String, license: String) {
         val msg = TextView(this).apply { setTextColor(fg); setPadding(dp(20), dp(10), dp(20), dp(10)); text = "Starting…" }
         val dlg = AlertDialog.Builder(this).setTitle(title).setView(msg).setCancelable(false).show()
@@ -1206,6 +1333,11 @@ class MainActivity : Activity() {
                 }
             }
             REQ_RENDER -> renderScene(uri)
+            REQ_HEAD -> {
+                val f = java.io.File(cacheDir, displayName(uri).replace(Regex("[^A-Za-z0-9._-]"), "_"))
+                contentResolver.openInputStream(uri)!!.use { i -> f.outputStream().use { i.copyTo(it) } }
+                startHeadImport(f)
+            }
             REQ_SCENE_CHAR -> runCatching { JSONObject(contentResolver.openInputStream(uri)!!.use { String(it.readBytes()) }) }
                 .onSuccess { addSceneChar(it) }.onFailure { toast("Couldn't read that file") }
             REQ_SAVE -> runCatching { contentResolver.openOutputStream(uri)!!.use { it.write(model.state.toJson().toString(2).toByteArray()) } }
@@ -1254,5 +1386,5 @@ class MainActivity : Activity() {
     override fun onPause() { super.onPause(); if (::view3d.isInitialized) view3d.onPause(); if (::model.isInitialized) saveLast() }
     override fun onResume() { super.onResume(); if (::view3d.isInitialized) view3d.onResume() }
 
-    companion object { const val REQ_GLB = 1; const val REQ_SAVE = 2; const val REQ_LOAD = 3; const val REQ_PACK = 4; const val REQ_OUTFIT = 5; const val REQ_OUTFIT_TEX = 6; const val REQ_ASIS = 7; const val REQ_RENDER = 8; const val REQ_SCENE_CHAR = 9 }
+    companion object { const val REQ_GLB = 1; const val REQ_SAVE = 2; const val REQ_LOAD = 3; const val REQ_PACK = 4; const val REQ_OUTFIT = 5; const val REQ_OUTFIT_TEX = 6; const val REQ_ASIS = 7; const val REQ_RENDER = 8; const val REQ_SCENE_CHAR = 9; const val REQ_HEAD = 10 }
 }
