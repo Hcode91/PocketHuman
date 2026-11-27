@@ -497,7 +497,8 @@ class HeadSwapTest {
         val srcOf = AssetSource { p -> if (p.startsWith("imported/")) File(tmp, p).readBytes() else File("src/main/assets/ph", p).readBytes() }
         val lib = Library(srcOf, tmp)
         val m = HumanModel(lib).apply { state.macro["gender"] = 0f; state.macro["age"] = 0.56f; state.clothes.add("clothes_female_casualsuit01"); rebuild() }
-        var raw = MeshIO.load(src); if (raw.tris.size / 3 > 200000) raw = MeshIO.simplify(raw, 150000)
+        var raw = MeshIO.load(src); if (raw.tris.size / 3 > 1_500_000) raw = MeshIO.simplify(raw, 1_000_000)
+        println("source: ${raw.nv} verts ${raw.tris.size / 3} tris")
         val t0 = System.currentTimeMillis()
         HeadSwap.debug = { println(it) }
         val prep = HeadSwap.prepare(raw, 0, m)

@@ -61,15 +61,21 @@ class MeshQuery(private val v: FloatArray, private val tris: IntArray, mask: Boo
         val d3 = abx * bpx + aby * bpy + abz * bpz; val d4 = acx * bpx + acy * bpy + acz * bpz
         if (d3 >= 0 && d4 <= d3) return hit(1f, 0f)
         val vc = d1 * d4 - d3 * d2
-        if (vc <= 0 && d1 >= 0 && d3 <= 0) return hit(d1 / (d1 - d3), 0f)
+        if (vc <= 0 && d1 >= 0 && d3 <= 0 && d1 - d3 != 0f) return hit(d1 / (d1 - d3), 0f)
         val cpx = px - v[cc]; val cpy = py - v[cc + 1]; val cpz = pz - v[cc + 2]
         val d5 = abx * cpx + aby * cpy + abz * cpz; val d6 = acx * cpx + acy * cpy + acz * cpz
         if (d6 >= 0 && d5 <= d6) return hit(0f, 1f)
         val vb = d5 * d2 - d1 * d6
-        if (vb <= 0 && d2 >= 0 && d6 <= 0) return hit(0f, d2 / (d2 - d6))
+        if (vb <= 0 && d2 >= 0 && d6 <= 0 && d2 - d6 != 0f) return hit(0f, d2 / (d2 - d6))
         val va = d3 * d6 - d5 * d4
-        if (va <= 0 && (d4 - d3) >= 0 && (d5 - d6) >= 0) { val w = (d4 - d3) / ((d4 - d3) + (d5 - d6)); return hit(1 - w, w) }
-        val den = 1f / (va + vb + vc); return hit(vb * den, vc * den)
+        if (va <= 0 && (d4 - d3) >= 0 && (d5 - d6) >= 0) { val w = (d4 - d3) / ((d4 - d3) + (d5 - d6)); if (w.isFinite()) return hit(1 - w, w) }
+        val den = 1f / (va + vb + vc)
+        // a squashed (zero-area) triangle, common in AI meshes: fall back to its nearest corner
+        if (!den.isFinite() || !(vb * den).isFinite() || !(vc * den).isFinite()) {
+            val da = apx * apx + apy * apy + apz * apz; val db = bpx * bpx + bpy * bpy + bpz * bpz; val dc = cpx * cpx + cpy * cpy + cpz * cpz
+            return if (da <= db && da <= dc) hit(0f, 0f) else if (db <= dc) hit(1f, 0f) else hit(0f, 1f)
+        }
+        return hit(vb * den, vc * den)
     }
 }
 

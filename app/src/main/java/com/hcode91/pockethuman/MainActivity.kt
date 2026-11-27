@@ -1165,7 +1165,8 @@ class MainActivity : Activity() {
         model.state.expression.clear(); model.state.customHead = null; model.rebuild()
         worker.execute {
             val r = runCatching {
-                var m = MeshIO.load(f); if (m.tris.size / 3 > 200000) m = MeshIO.simplify(m, 150000)
+                // keep the full detail for the head (it's cut out first, then thinned only if still huge)
+                var m = MeshIO.load(f); if (m.tris.size / 3 > 1_500_000) m = MeshIO.simplify(m, 1_000_000)
                 headRaw = m; headParams = HeadSwap.Params()
                 headName = f.nameWithoutExtension.replace("Meshy_AI_", "").replace(Regex("_\\d{8}.*$"), "").replace('_', ' ').take(40).ifBlank { "Head" }
                 headPrep = HeadSwap.prepare(m, 0, model)
@@ -1229,6 +1230,7 @@ class MainActivity : Activity() {
             slider("Eyes up / down", p.eyeUp, -0.6f, 0.6f, { "%.1f cm".format(it * 10) }) { p.eyeUp = it }
             slider("Eyes apart", p.eyeApart, -0.4f, 0.4f, { "%.1f cm".format(it * 10) }) { p.eyeApart = it }
             slider("Eyes in / out", p.eyeDepth, -0.4f, 0.4f, { "%.1f cm".format(it * 10) }) { p.eyeDepth = it }
+            slider("Eyelid shade (lighter / darker than the face)", p.lidShade, 0.5f, 1.3f, ::pct) { p.lidShade = it }
         } else content.addView(TextView(this).apply { setTextColor(dim); textSize = 12f; text = "The painted eyes stay. Smiles, brows and lips still move; blinking won't look right." })
         button("Make the head") { makeHead() }
         button("Cancel") { closeHeadEditor() }

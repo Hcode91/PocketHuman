@@ -171,7 +171,7 @@ class HumanView(ctx: Context, private var lib: Library) : GLSurfaceView(ctx) {
                 val marker = g.part.name.startsWith("marker")
                 if (pass != (if (marker) 2 else if (g.part.alpha) 1 else 0)) continue
                 if (marker) glDisable(GL_DEPTH_TEST) else glEnable(GL_DEPTH_TEST)
-                if (g.part.alpha || g.part.name.startsWith("my_") || g.part.name == "draft") glDisable(GL_CULL_FACE) else { glEnable(GL_CULL_FACE); glCullFace(GL_BACK) }
+                if (g.part.alpha || g.part.name.startsWith("my_") || g.part.name == "draft" || g.part.name.startsWith("head")) glDisable(GL_CULL_FACE) else { glEnable(GL_CULL_FACE); glCullFace(GL_BACK) }
                 glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, texture(g.part.texture))
                 glUniform1i(glGetUniformLocation(prog, "uTex"), 0)
                 glUniform1f(glGetUniformLocation(prog, "uCut"), if (g.part.alpha) 0.4f else -1f)

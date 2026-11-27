@@ -37,6 +37,8 @@ class HeadData(
 }
 
 object HeadSwap {
+    /** most triangles kept for a head */
+    const val MAX_TRIS = 120_000
     @Volatile var debug: ((String) -> Unit)? = null
     class Params {
         var turn = 0                       // x90° about the vertical
@@ -44,12 +46,13 @@ object HeadSwap {
         var skinMatch = 1f                 // 0..1, how far to pull the head's skin tone to the body's
         var appEyes = true
         var eyeUp = 0f; var eyeApart = 0f; var eyeDepth = 0f   // fine-tuning of where the app's eyes sit (dm)
+        var lidShade = 0.82f                                  // brightness of the app's eyelids against the new face
         fun toJson() = JSONObject().put("turn", turn).put("size", size.toDouble()).put("up", up.toDouble()).put("forward", forward.toDouble())
             .put("side", side.toDouble()).put("tilt", tilt.toDouble()).put("skinMatch", skinMatch.toDouble()).put("appEyes", appEyes)
-            .put("eyeUp", eyeUp.toDouble()).put("eyeApart", eyeApart.toDouble()).put("eyeDepth", eyeDepth.toDouble())
+            .put("eyeUp", eyeUp.toDouble()).put("eyeApart", eyeApart.toDouble()).put("eyeDepth", eyeDepth.toDouble()).put("lidShade", lidShade.toDouble())
         fun load(j: JSONObject) { turn = j.optInt("turn"); size = j.optDouble("size", 1.0).toFloat(); up = j.optDouble("up").toFloat(); forward = j.optDouble("forward").toFloat()
             side = j.optDouble("side").toFloat(); tilt = j.optDouble("tilt").toFloat(); skinMatch = j.optDouble("skinMatch", 1.0).toFloat(); appEyes = j.optBoolean("appEyes", true)
-            eyeUp = j.optDouble("eyeUp").toFloat(); eyeApart = j.optDouble("eyeApart").toFloat(); eyeDepth = j.optDouble("eyeDepth").toFloat() }
+            eyeUp = j.optDouble("eyeUp").toFloat(); eyeApart = j.optDouble("eyeApart").toFloat(); eyeDepth = j.optDouble("eyeDepth").toFloat(); lidShade = j.optDouble("lidShade", 0.82).toFloat() }
     }
 
     /** The cut-off head, in decimetres, with the middle of the neck cut at the origin. */
@@ -178,7 +181,11 @@ object HeadSwap {
             uv[j * 2] = raw.uv[i * 2]; uv[j * 2 + 1] = raw.uv[i * 2 + 1]
         }
         require(tl.isNotEmpty()) { "Couldn't find a head in that model" }
-        orient(pos, tl)
+        // very detailed heads are thinned out to keep the phone quick (the cut-off head, not the whole model)
+        if (tl.size / 3 > MAX_TRIS) {
+            val sm = MeshIO.simplify(RawMesh(pos, uv, tl.toIntArray(), null, "png"), MAX_TRIS)
+            return Prepared(sm.pos, sm.uv, sm.tris, raw.texture, raw.textureExt, full, (chinY - neckY) * scale)
+        }
         return Prepared(pos, uv, tl.toIntArray(), raw.texture, raw.textureExt, full, (chinY - neckY) * scale)
     }
 
@@ -281,6 +288,7 @@ object HeadSwap {
             nb[a].add(b); nb[a].add(c); nb[b].add(a); nb[b].add(c); nb[c].add(a); nb[c].add(b)
         }
         val hv = (0 until nV).filter { inH[it] }.toIntArray()
+        debug?.invoke("head region ${hv.size} verts, ${headTris.size / 3} tris, front ${ref.front} ax ${ref.ax}")
 
         // --- shrink-wrap the PocketHuman head onto the new one
         val mn = weldedNormals(mp, prep.tris, nm).also { nrm ->
@@ -378,8 +386,23 @@ object HeadSwap {
             off[i * 3] = (x - ax) * t + nx * push * (1 - t); off[i * 3 + 1] = (y - ay) * t + ny * push * (1 - t); off[i * 3 + 2] = (z - az) * t + nz * push * (1 - t)
         }
 
+        // --- make every triangle face outwards. AI meshes mix both windings, which shows up as missing patches
+        // (back faces get culled) and dark ones (lit from inside). The wrapped PocketHuman head under each point
+        // says which way is out.
+        var tris = prep.tris.copyOf()
+        var flipped = 0
+        for (t in 0 until tris.size / 3) {
+            val a = tris[t * 3]; val b = tris[t * 3 + 1]; val c = tris[t * 3 + 2]
+            val ux = mp[b * 3] - mp[a * 3]; val uy = mp[b * 3 + 1] - mp[a * 3 + 1]; val uz = mp[b * 3 + 2] - mp[a * 3 + 2]
+            val vx = mp[c * 3] - mp[a * 3]; val vy = mp[c * 3 + 1] - mp[a * 3 + 1]; val vz = mp[c * 3 + 2] - mp[a * 3 + 2]
+            val fx = uy * vz - uz * vy; val fy = uz * vx - ux * vz; val fz = ux * vy - uy * vx
+            var rx = 0f; var ry = 0f; var rz = 0f
+            for (v in intArrayOf(a, b, c)) for (q in 0..2) { val r = refs[v * 3 + q]; val w = rw[v * 3 + q]; rx += w * vn[r * 3]; ry += w * vn[r * 3 + 1]; rz += w * vn[r * 3 + 2] }
+            if (fx * rx + fy * ry + fz * rz < 0) { tris[t * 3 + 1] = c; tris[t * 3 + 2] = b; flipped++ }
+        }
+        debug?.invoke("flipped $flipped of ${tris.size / 3} triangles to face outwards")
+
         // --- the app's eyes: take out the painted eyes, keep the eyelids
-        var tris = prep.tris
         if (p.appEyes) {
             val eyes = eyeProxy; val fitted = eyes.fit(W)
             val left = ArrayList<Int>(); val right = ArrayList<Int>()
@@ -397,7 +420,7 @@ object HeadSwap {
                 var gx = 0f; var gy = 0f; var gz = 0f
                 for (q in 0..2) { val v = tris[t * 3 + q]; gx += mp[v * 3] / 3; gy += mp[v * 3 + 1] / 3; gz += mp[v * 3 + 2] / 3 }
                 val inEye = spheres.any { s -> val dx = gx - s[0]; val dy = gy - s[1]; val dz = gz - s[2]
-                    dz > -0.3f * s[3] && (dx * dx) / (1.3f * 1.3f * s[3] * s[3]) + (dy * dy) / (0.9f * 0.9f * s[3] * s[3]) < 1f }
+                    dz > -0.3f * s[3] && (dx * dx) / (1.15f * 1.15f * s[3] * s[3]) + (dy * dy) / (0.8f * 0.8f * s[3] * s[3]) < 1f }
                 if (!inEye) for (q in 0..2) keep.add(tris[t * 3 + q])
             }
             tris = keep.toIntArray()
@@ -408,7 +431,7 @@ object HeadSwap {
         // eyelids keep their own shape and move with their eyeball (wrapping them would squash them)
         if (p.appEyes) for ((ei, e) in eyeSpheres.withIndex()) for (i in hv) {
             val dx = V[i * 3] - e[0]; val dy = V[i * 3 + 1] - e[1]; val dz = V[i * 3 + 2] - e[2]
-            if (dz > -0.6f * e[3] && (dx * dx) / (1.45f * 1.45f * e[3] * e[3]) + (dy * dy) / (1.1f * 1.1f * e[3] * e[3]) < 1f) {
+            if (dz > -0.4f * e[3] && (dx * dx) / (1.3f * 1.3f * e[3] * e[3]) + (dy * dy) / (1.0f * 1.0f * e[3] * e[3]) < 1f) {
                 lidList.add(i); val sh = eyeShift.getOrNull(ei) ?: FloatArray(3); for (k in 0..2) disp[i * 3 + k] = sh[k] }
         }
         val lidSet = lidList.toHashSet()
@@ -473,8 +496,11 @@ object HeadSwap {
                         if (dy < -0.4f * e[3] && d2 > (1.35f * e[3]) * (1.35f * e[3]) && d2 < (2.4f * e[3]) * (2.4f * e[3]) && mn[i * 3 + 2] > 0.3f)
                             ring.add(sample(Triple(tw, th, px), prep.uv[i * 2], prep.uv[i * 2 + 1]))
                     }
-                    // typical skin there: skin-coloured samples only (no lashes, hair strands or shadows)
-                    for (c in ring) { if (!OutfitDraft.isSkinColour(c, 0.8f)) continue; for (k in 0..2) fm[k] += ((c shr (16 - 8 * k)) and 255).toDouble(); fc++ }
+                    // typical skin there, shading and make-up included: warm-coloured samples (no grey hair strands or black
+                    // lashes), the middle half of them by brightness
+                    val warm = ring.filter { c -> val r = (c shr 16) and 255; val b = c and 255; r > b + 8 && r + ((c shr 8) and 255) + b > 90 }
+                        .sortedBy { ((it shr 16) and 255) + ((it shr 8) and 255) + (it and 255) }
+                    for (c in warm.subList(warm.size / 4, warm.size * 3 / 4)) { for (k in 0..2) fm[k] += ((c shr (16 - 8 * k)) and 255).toDouble(); fc++ }
                     // the body skin over the whole eyelid area (not just at its vertices: the texture between them is often lighter)
                     run {
                         val (sw, shh, sp) = sk; val copy = sp.copyOf(); val lidSet2 = lidList.toHashSet()
@@ -486,7 +512,7 @@ object HeadSwap {
                         }
                     }
                     if (fc > 5 && bc > 5) {
-                        val g = FloatArray(3) { k -> ((fm[k] / fc) / (bmn[k] / bc).coerceAtLeast(1.0)).toFloat().coerceIn(0.4f, 2.5f) }
+                        val g = FloatArray(3) { k -> ((fm[k] / fc) / (bmn[k] / bc).coerceAtLeast(1.0) * p.lidShade).toFloat().coerceIn(0.3f, 2.5f) }
                         debug?.invoke("lid tint: face ${fm.map { it / fc }} body ${bmn.map { it / bc }} n $fc $bc")
                         val (sw, shh, sp) = sk; val tinted = IntArray(sp.size) { i -> val c = sp[i]; var o2 = c and 0xff000000.toInt()
                             for (k in 0..2) o2 = o2 or ((((c shr (16 - 8 * k)) and 255) * g[k]).toInt().coerceIn(0, 255) shl (16 - 8 * k)); o2 }
@@ -503,6 +529,7 @@ object HeadSwap {
         for (i in lidList) for (k in 0..2) disp[i * 3 + k] += vn[i * 3 + k] * 0.012f
         val dIdx = (hv.toList() + helperMoved).distinct().filter { i -> Math.abs(disp[i * 3]) + Math.abs(disp[i * 3 + 1]) + Math.abs(disp[i * 3 + 2]) > 1e-5f }.toIntArray()
         val dVal = FloatArray(dIdx.size * 3) { disp[dIdx[it / 3] * 3 + it % 3] }
+        debug?.invoke("lids ${lidList.size}, moved ${dIdx.size}, |disp| max ${hv.maxOfOrNull { i -> Math.abs(disp[i * 3]) + Math.abs(disp[i * 3 + 1]) + Math.abs(disp[i * 3 + 2]) }}, eyes ${eyeSpheres.size}, appEyes ${p.appEyes}")
         // drop vertices no triangle uses any more
         val used = IntArray(nm) { -1 }; var nu = 0; for (x in tris) if (used[x] < 0) used[x] = nu++
         val idx = IntArray(nu); for (i in 0 until nm) if (used[i] >= 0) idx[used[i]] = i

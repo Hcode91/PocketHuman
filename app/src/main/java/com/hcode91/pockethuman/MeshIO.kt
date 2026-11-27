@@ -144,14 +144,21 @@ object MeshIO {
         for (iter in 0 until 14) {
             val cs = hi / cells; val uvc = 1f / cells
             val key = HashMap<Long, Int>(); val sum = ArrayList<Float>(); val cnt = ArrayList<Int>()
+            // position cells are shared by every UV island touching them, so both sides of a UV seam end up at the
+            // same point (separate cells per island would pull them apart and crack the surface)
+            val pkey = HashMap<Long, Int>(); val psum = ArrayList<Float>(); val pcnt = ArrayList<Int>(); val pOf = ArrayList<Int>()
             val map = IntArray(m.nv)
             for (i in 0 until m.nv) {
-                val k = (((Math.floor((m.pos[i * 3] / cs).toDouble()).toLong() * 73856093L) xor (Math.floor((m.pos[i * 3 + 1] / cs).toDouble()).toLong() * 19349663L) xor
-                        (Math.floor((m.pos[i * 3 + 2] / cs).toDouble()).toLong() * 83492791L)) * 31) + (Math.floor((m.uv[i * 2] / uvc).toDouble()).toLong() * 2654435761L) + Math.floor((m.uv[i * 2 + 1] / uvc).toDouble()).toLong()
-                val c = key.getOrPut(k) { cnt.add(0); repeat(5) { sum.add(0f) }; cnt.size - 1 }
+                val pk = (Math.floor((m.pos[i * 3] / cs).toDouble()).toLong() * 73856093L) xor (Math.floor((m.pos[i * 3 + 1] / cs).toDouble()).toLong() * 19349663L) xor
+                        (Math.floor((m.pos[i * 3 + 2] / cs).toDouble()).toLong() * 83492791L)
+                val pc = pkey.getOrPut(pk) { pcnt.add(0); repeat(3) { psum.add(0f) }; pcnt.size - 1 }
+                pcnt[pc] = pcnt[pc] + 1; for (q in 0..2) psum[pc * 3 + q] = psum[pc * 3 + q] + m.pos[i * 3 + q]
+                val k = (pk * 31) + (Math.floor((m.uv[i * 2] / uvc).toDouble()).toLong() * 2654435761L) + Math.floor((m.uv[i * 2 + 1] / uvc).toDouble()).toLong()
+                val c = key.getOrPut(k) { cnt.add(0); repeat(5) { sum.add(0f) }; pOf.add(pc); cnt.size - 1 }
                 map[i] = c; cnt[c] = cnt[c] + 1
-                for (q in 0..2) sum[c * 5 + q] = sum[c * 5 + q] + m.pos[i * 3 + q]; sum[c * 5 + 3] = sum[c * 5 + 3] + m.uv[i * 2]; sum[c * 5 + 4] = sum[c * 5 + 4] + m.uv[i * 2 + 1]
+                sum[c * 5 + 3] = sum[c * 5 + 3] + m.uv[i * 2]; sum[c * 5 + 4] = sum[c * 5 + 4] + m.uv[i * 2 + 1]
             }
+            for (c in 0 until cnt.size) { val pc = pOf[c]; for (q in 0..2) sum[c * 5 + q] = psum[pc * 3 + q] / pcnt[pc] * cnt[c] }
             val t = ArrayList<Int>()
             var i = 0
             while (i < m.tris.size) { val a = map[m.tris[i]]; val b = map[m.tris[i + 1]]; val c = map[m.tris[i + 2]]; if (a != b && b != c && a != c) { t.add(a); t.add(b); t.add(c) }; i += 3 }
