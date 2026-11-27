@@ -38,7 +38,7 @@ class HeadData(
 
 object HeadSwap {
     /** most triangles kept for a head */
-    const val MAX_TRIS = 120_000
+    const val MAX_TRIS = 300_000
     @Volatile var debug: ((String) -> Unit)? = null
     class Params {
         var turn = 0                       // x90° about the vertical
@@ -158,9 +158,12 @@ object HeadSwap {
         val keepTri = BooleanArray(raw.tris.size / 3)
         for (tI in 0 until raw.tris.size / 3) {
             val a = raw.tris[tI * 3]; val b = raw.tris[tI * 3 + 1]; val c = raw.tris[tI * 3 + 2]
-            if (minOf(o[a * 3 + 1], o[b * 3 + 1], o[c * 3 + 1]) < cutAt) continue
-            // below the chin, nothing that hangs in front of the neck (collars, ties, a raised hand)
             val gy = (o[a * 3 + 1] + o[b * 3 + 1] + o[c * 3 + 1]) / 3; val gz = (o[a * 3 + 2] + o[b * 3 + 2] + o[c * 3 + 2]) / 3
+            val gx = (o[a * 3] + o[b * 3] + o[c * 3]) / 3
+            if (minOf(o[a * 3 + 1], o[b * 3 + 1], o[c * 3 + 1]) < cutAt) continue
+            // shoulder tops and straps that reach above the cut, out to the sides
+            if (gy < chinY && gy < neckY + 0.35f / scale && Math.abs(gx - cx) > 0.95f / scale) continue
+            // below the chin, nothing that hangs in front of the neck (collars, ties, a raised hand)
             if (gy < chinY && gz > front + 0.15f / scale) continue
             keepTri[tI] = true
             val ra = find(grp[a]); val rb = find(grp[b]); val rc = find(grp[c]); parent[rb] = ra; parent[find(rc)] = ra
@@ -381,7 +384,8 @@ object HeadSwap {
                 ax += ws[q] * V[r * 3]; ay += ws[q] * V[r * 3 + 1]; az += ws[q] * V[r * 3 + 2]
                 nx += ws[q] * vn[r * 3]; ny += ws[q] * vn[r * 3 + 1]; nz += ws[q] * vn[r * 3 + 2] }
             // the bottom of the neck melts into the body: sits exactly on it (a hair outside, so it covers it)
-            val t = smooth(ref.cutY - 0.4f, ref.cutY + 0.15f, y); seamT[i] = t
+            // ...but only skin that sits on the neck: hair hanging past it keeps its shape
+            val t = maxOf(smooth(ref.cutY - 0.4f, ref.cutY + 0.15f, y), smooth(0.12f, 0.3f, h.dist)); seamT[i] = t
             val push = 0.035f
             off[i * 3] = (x - ax) * t + nx * push * (1 - t); off[i * 3 + 1] = (y - ay) * t + ny * push * (1 - t); off[i * 3 + 2] = (z - az) * t + nz * push * (1 - t)
         }
@@ -398,7 +402,8 @@ object HeadSwap {
             val fx = uy * vz - uz * vy; val fy = uz * vx - ux * vz; val fz = ux * vy - uy * vx
             var rx = 0f; var ry = 0f; var rz = 0f
             for (v in intArrayOf(a, b, c)) for (q in 0..2) { val r = refs[v * 3 + q]; val w = rw[v * 3 + q]; rx += w * vn[r * 3]; ry += w * vn[r * 3 + 1]; rz += w * vn[r * 3 + 2] }
-            if (fx * rx + fy * ry + fz * rz < 0) { tris[t * 3 + 1] = c; tris[t * 3 + 2] = b; flipped++ }
+            // only skin lying on the face is checked: hair and the insides of things legitimately face other ways
+            if (gap[a] < 0.08f && gap[b] < 0.08f && gap[c] < 0.08f && fx * rx + fy * ry + fz * rz < 0) { tris[t * 3 + 1] = c; tris[t * 3 + 2] = b; flipped++ }
         }
         debug?.invoke("flipped $flipped of ${tris.size / 3} triangles to face outwards")
 

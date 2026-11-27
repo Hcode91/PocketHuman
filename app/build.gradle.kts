@@ -10,8 +10,8 @@ android {
         applicationId = "com.hcode91.pockethuman"
         minSdk = 26
         targetSdk = 35
-        versionCode = 15
-        versionName = "0.9.1"
+        versionCode = 16
+        versionName = "0.9.2"
     }
     buildTypes {
         release {
