@@ -40,7 +40,7 @@ class HeadData(
 
 object HeadSwap {
     /** most triangles kept for a head */
-    const val MAX_TRIS = 300_000
+    const val MAX_TRIS = 150_000
     @Volatile var debug: ((String) -> Unit)? = null
     class Params {
         var turn = 0                       // x90° about the vertical
@@ -120,7 +120,13 @@ object HeadSwap {
         val h = hi - lo
         val ref = appRef(model)
         val bodyH = ref.top - ref.lo
-        val full = h > bodyH * 0.6f
+        // a whole figure is tall and thin seen from the side; a bust or a head is about as deep as it is tall.
+        // (Size can't tell them apart: generators often scale every model to the same box.)
+        val full = run {
+            val zs = FloatArray(n) { o[it * 3 + 2] }; zs.sort()
+            val depth = zs[(n * 0.97f).toInt().coerceAtMost(n - 1)] - zs[(n * 0.03f).toInt()]
+            h / depth.coerceAtLeast(1e-3f) > 3.2f
+        }
         // middle of the figure, side to side: median x of the top part
         val xs = ArrayList<Float>(); for (i in 0 until n) if (o[i * 3 + 1] > hi - 0.2f * h) xs.add(o[i * 3]); xs.sort()
         var cx = if (xs.isEmpty()) 0f else xs[xs.size / 2]

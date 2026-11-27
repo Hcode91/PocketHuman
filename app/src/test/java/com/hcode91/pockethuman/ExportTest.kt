@@ -504,6 +504,16 @@ class HeadSwapTest {
         val prep = HeadSwap.prepare(raw, 0, m)
         println("head: ${prep.n} verts ${prep.tris.size / 3} tris full=${prep.full} prep ${System.currentTimeMillis() - t0} ms")
         val p = HeadSwap.Params()
+        run {
+            File(tmp, "imported/prev").mkdirs(); File(tmp, "imported/prev/tex.${raw.textureExt}").writeBytes(raw.texture!!)
+            val pos = HeadSwap.place(prep, HeadSwap.appRef(m), p)
+            val part = Part("head_preview", pos, weldedNormals(pos, prep.tris, prep.n), prep.uv, prep.tris, "imported/prev/tex.${raw.textureExt}", false, null, IntArray(0), FloatArray(0), IntArray(0), FloatArray(0), 0)
+            File("/tmp/headswap").mkdirs()
+            java.io.DataOutputStream(File("/tmp/headswap/preview.bin").outputStream().buffered()).use { o ->
+                o.writeInt(prep.n); o.writeInt(prep.tris.size); pos.forEach { o.writeFloat(it) }; prep.uv.forEach { o.writeFloat(it) }; prep.tris.forEach { o.writeInt(it) } }
+            File("/tmp/headswap/preview_tex.${raw.textureExt}").writeBytes(raw.texture!!)
+        }
+        if (System.getProperty("previewOnly") != null || File("/tmp/preview_only").exists()) return
         val d = HeadSwap.build(m, prep, p, "h1", "Test head", tmp, dec, writer) { println(it) }
         println("built: ${d.n} verts, hidden ${d.hidden.size}, wrapped ${d.dispIdx.size}, total ${System.currentTimeMillis() - t0} ms")
         HumanModel.headLoader = { id -> HeadStore.load(tmp, id) }

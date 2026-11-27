@@ -139,6 +139,14 @@ object MeshIO {
         if (m.tris.size / 3 <= targetTris) return m
         var lo = 0f; var hi = 0f
         for (k in 0..2) { var a = Float.MAX_VALUE; var b = -Float.MAX_VALUE; for (i in 0 until m.nv) { a = minOf(a, m.pos[i * 3 + k]); b = maxOf(b, m.pos[i * 3 + k]) }; hi = maxOf(hi, b - a) }
+        // surfaces facing different ways (the underside of hair over a neck, a sleeve over an arm) are never merged with
+        // each other, or thinning spins webs between them: each vertex is binned by which way it faces
+        val facing = run {
+            val nrm = weldedNormals(m.pos, m.tris, m.nv)
+            IntArray(m.nv) { i -> val x = nrm[i * 3]; val y = nrm[i * 3 + 1]; val z = nrm[i * 3 + 2]
+                val ax = Math.abs(x); val ay = Math.abs(y); val az = Math.abs(z)
+                if (ax >= ay && ax >= az) (if (x > 0) 0 else 1) else if (ay >= az) (if (y > 0) 2 else 3) else (if (z > 0) 4 else 5) }
+        }
         var cells = 600
         var res: RawMesh = m
         for (iter in 0 until 14) {
@@ -150,7 +158,7 @@ object MeshIO {
             val map = IntArray(m.nv)
             for (i in 0 until m.nv) {
                 val pk = (Math.floor((m.pos[i * 3] / cs).toDouble()).toLong() * 73856093L) xor (Math.floor((m.pos[i * 3 + 1] / cs).toDouble()).toLong() * 19349663L) xor
-                        (Math.floor((m.pos[i * 3 + 2] / cs).toDouble()).toLong() * 83492791L)
+                        (Math.floor((m.pos[i * 3 + 2] / cs).toDouble()).toLong() * 83492791L) xor (facing[i].toLong() * 1000003L)
                 val pc = pkey.getOrPut(pk) { pcnt.add(0); repeat(3) { psum.add(0f) }; pcnt.size - 1 }
                 pcnt[pc] = pcnt[pc] + 1; for (q in 0..2) psum[pc * 3 + q] = psum[pc * 3 + q] + m.pos[i * 3 + q]
                 val k = (pk * 31) + (Math.floor((m.uv[i * 2] / uvc).toDouble()).toLong() * 2654435761L) + Math.floor((m.uv[i * 2 + 1] / uvc).toDouble()).toLong()
