@@ -1,5 +1,6 @@
 package com.hcode91.pockethuman
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -370,5 +371,86 @@ class GameCastTest {
         make("Genzo", { state.macro["gender"] = 1f; state.macro["age"] = 0.88f; state.macro["weight"] = 0.45f; state.setRace("asian", 0.9f)
             state.hair = "hair_short04"; state.clothes.add("clothes_male_casualsuit03"); state.clothes.add("clothes_shoes01") },
             listOf("Idle_Loop", "Idle_Talking_Loop", "Idle_No_Loop", "Yes", "Walk_Loop"), "/tmp/genzo.glb")
+    }
+}
+
+class GodotCastTest {
+    @Test fun exportsCast() {
+        val tmp = java.nio.file.Files.createTempDirectory("phgc").toFile()
+        val copy = TextureSink { s, dir, base, _ -> dir.mkdirs(); val n = base + "." + s.extension.lowercase(); s.copyTo(File(dir, n), true); n }
+        val fetch: (String) -> ByteArray = { u -> java.net.URL(u).openStream().use { it.readBytes() } }
+        val all = org.json.JSONArray(File("src/main/assets/ph/community.json").readText())
+        val byN = (0 until all.length()).associate { all.getJSONObject(it).let { e -> e.getInt("n") to e } }
+        for (n in listOf(63, 896, 3238, 2617)) println("install $n: " + runCatching { CommunityImporter(tmp, copy, fetch).install(byN[n]!!) {} }.fold({ "ok ${it.counts}" }, { "FAIL ${it.message}" }))
+        val srcOf = AssetSource { p -> if (p.startsWith("imported/")) File(tmp, p).readBytes() else File("src/main/assets/ph", p).readBytes() }
+        val lib = Library(srcOf, tmp)
+        val gi = lib.proxies.first { it.id.startsWith("community_63_") }.id; val ninja = lib.proxies.first { it.id.startsWith("community_896_") }.id
+        val robe = lib.proxies.first { it.id.startsWith("community_3238_") }.id; val tunic = lib.proxies.first { it.id.startsWith("community_2617_") }.id
+        println("gi=$gi ninja=$ninja robe=$robe tunic=$tunic")
+        val out = File("/tmp/godot_cast").apply { mkdirs() }
+        fun make(file: String, name: String, anims: List<String>, setup: HumanModel.() -> Unit) {
+            val m = HumanModel(lib); m.state.name = name; m.setup(); m.state.skin = m.matchSkin(); m.rebuild()
+            File(out, file).outputStream().use { GlbExporter.write(m, it, anims = anims, faceShapes = false) }
+            println("$name ${File(out, file).length() / 1024} KB")
+        }
+        val base = DEFAULT_ANIMS
+        make("ren.glb", "Ren", base + listOf("LayToIdle", "Idle_Talking_Loop", "Fixing_Kneeling", "Hit_Chest", "Hit_Head", "Hit_Knockback", "Swim_Idle_Loop", "Sword_Idle", "Sitting_Idle_Loop")) {
+            state.macro["gender"] = 1f; state.macro["muscle"] = 0.62f; state.macro["height"] = 0.55f; state.setRace("asian", 0.9f)
+            state.hair = "hair_short02"; state.clothes.add(tunic); state.clothes.add("clothes_shoes02") }
+        make("genzo.glb", "Genzo", listOf("Idle_Loop", "Idle_Talking_Loop", "Idle_No_Loop", "Yes", "Walk_Loop")) {
+            state.macro["gender"] = 1f; state.macro["age"] = 0.88f; state.macro["weight"] = 0.45f; state.setRace("asian", 0.9f)
+            state.hair = "hair_short04"; state.clothes.add("clothes_male_casualsuit03"); state.clothes.add("clothes_shoes01") }
+        make("lord.glb", "Lord Kaze", listOf("Idle_Loop", "Idle_Talking_Loop", "Death01", "Hit_Chest", "Idle_FoldArms_Loop")) {
+            state.macro["gender"] = 1f; state.macro["age"] = 0.8f; state.macro["height"] = 0.6f; state.setRace("asian", 0.95f)
+            state.hair = "hair_short03"; state.clothes.add(robe); state.clothes.add("clothes_shoes05") }
+        make("takeshi.glb", "Takeshi", listOf("Idle_Loop", "Idle_Talking_Loop", "Sword_Idle", "Sword_Attack", "Walk_Loop", "Interact", "Idle_No_Loop", "Idle_FoldArms_Loop", "Yes", "Fixing_Kneeling")) {
+            state.macro["gender"] = 1f; state.macro["muscle"] = 0.6f; state.macro["height"] = 0.62f; state.setRace("asian", 0.85f)
+            state.hair = "hair_short01"; state.clothes.add(gi); state.clothes.add("clothes_shoes02") }
+        make("guard.glb", "Guard", listOf("Idle_Loop", "Walk_Loop", "Sword_Idle", "Idle_Shield_Loop", "Punch_Cross", "Walk_Carry_Loop", "Interact", "Sword_Attack")) {
+            state.macro["gender"] = 1f; state.macro["muscle"] = 0.7f; state.macro["weight"] = 0.6f; state.setRace("asian", 0.9f)
+            state.hair = null; state.clothes.add(ninja) }
+    }
+}
+
+class SceneTest {
+    @Test fun posesTwoCharacters() {
+        val tmp = java.nio.file.Files.createTempDirectory("phsc").toFile()
+        val src = AssetSource { p -> if (p.startsWith("imported/")) File(tmp, p).readBytes() else File("src/main/assets/ph", p).readBytes() }
+        val lib = Library(src, tmp); val al = lib.anims!!
+        val a = HumanModel(lib).apply { state.macro["gender"] = 1f; state.hair = "hair_short02"; state.clothes.add("clothes_shoes02"); state.skin = matchSkin(); rebuild() }
+        val b = HumanModel(lib).apply { state.macro["gender"] = 0f; state.expression["mh:mouth-corner-puller"] = 0.8f; state.skin = matchSkin(); rebuild() }
+        val ca = SceneChar(a).apply { x = -0.45f; yaw = 30f; label = "A" }
+        val cb = SceneChar(b).apply { x = 0.45f; yaw = -30f; label = "B"; pose.clip = "Sitting_Idle_Loop"; pose.time = 0.5f }
+        val bones = lib.rig.bones; fun bi(n: String) = bones.indexOfFirst { it.name == "mixamorig:$n" }
+        // A: right arm raised forward, head tilted, left hand made into a fist; B sits on a raised block
+        ca.pose.offsets[bi("RightArm")] = floatArrayOf(-70f, 0f, 0f); ca.pose.offsets[bi("Head")] = floatArrayOf(10f, 0f, 15f)
+        ScenePoser.setCurl(ca, "Left", 1f); ScenePoser.mirror(ca, "Left")
+        assertTrue(ScenePoser.curlOf(ca, "Right") > 0.9f)
+        // raise both arms (same numbers both sides), bend the left elbow forward, lift the right thigh forward, bend its knee
+        ca.pose.offsets[bi("RightArm")] = floatArrayOf(0f, 0f, 40f); ca.pose.offsets[bi("LeftArm")] = floatArrayOf(0f, 0f, 40f)
+        ca.pose.offsets[bi("LeftForeArm")] = floatArrayOf(0f, -70f, 0f)
+        ca.pose.offsets[bi("RightUpLeg")] = floatArrayOf(-50f, 0f, 0f); ca.pose.offsets[bi("RightLeg")] = floatArrayOf(60f, 0f, 0f)
+        ca.yaw = 0f; ca.x = 0f
+        cb.y = 0.45f
+        val out = File("/tmp/scene_test").apply { mkdirs() }
+        val dump = org.json.JSONArray()
+        val parts = ScenePoser.parts(ca, al).first + ScenePoser.parts(cb, al).first + SceneProps.box("bench", 4.5f, 2.2f, 0f, 6f, 4.4f, 6f, "x")
+        for ((i, p) in parts.withIndex()) {
+            assertTrue(p.joints.isEmpty())
+            val f = File(out, "p$i.bin"); java.io.DataOutputStream(f.outputStream().buffered()).use { o ->
+                o.writeInt(p.pos.size / 3); o.writeInt(p.tris.size); p.pos.forEach { o.writeFloat(it) }; p.uv.forEach { o.writeFloat(it) }; p.tris.forEach { o.writeInt(it) } }
+            val tex = File(out, "t$i.png"); runCatching { tex.writeBytes(src.bytes(p.texture)) }
+            dump.put(org.json.JSONObject().put("bin", f.path).put("tex", if (tex.exists()) tex.path else "").put("alpha", p.alpha).put("name", p.name))
+        }
+        File(out, "parts.json").writeText(dump.toString())
+        // feet on the floor for the standing character
+        val body = ScenePoser.parts(ca, al).first.first { it.name.startsWith("body") }
+        var miny = Float.MAX_VALUE; for (i in 0 until body.count) miny = minOf(miny, body.pos[i * 3 + 1])
+        println("A lowest point (dm): $miny"); assertTrue(Math.abs(miny) < 0.6f)
+        // saving and loading a scene keeps the pose
+        ScenePoser.saveScene(File(tmp, "scenes"), "Test", listOf(ca, cb), org.json.JSONObject())
+        val j = org.json.JSONObject(File(tmp, "scenes/Test.json").readText())
+        val back = SceneChar.fromJson(lib, j.getJSONArray("chars").getJSONObject(1))
+        assertEquals("Sitting_Idle_Loop", back.pose.clip); assertEquals(0.45f, back.y, 1e-4f)
     }
 }

@@ -20,7 +20,15 @@ import javax.microedition.khronos.opengles.GL10
 class HumanView(ctx: Context, private var lib: Library) : GLSurfaceView(ctx) {
     private val r = R3()
     var yaw = 0f; var pitch = 5f; var dist = 38f; var targetY = 8.5f
+    var targetX = 0f; var targetZ = 0f; var fov = 35f
+
+    /** Lighting: a key light, a fill light, ambient, a rim and the background colour. */
+    class Lighting(val name: String, val keyDir: FloatArray, val key: FloatArray, val fillDir: FloatArray, val fill: FloatArray, val amb: FloatArray, val rim: FloatArray, val bg: FloatArray)
+    var lighting = PRESETS[0]
+        set(v) { field = v; requestRender() }
     private var faceMode = false
+    /** Scene mode: single taps go here (picking a joint) and double-tap zoom is off. */
+    var onTap: ((Float, Float) -> Unit)? = null
 
     init {
         setEGLContextClientVersion(3)
@@ -38,11 +46,18 @@ class HumanView(ctx: Context, private var lib: Library) : GLSurfaceView(ctx) {
     /** Same camera as the renderer, for picking: returns proj*view. */
     fun viewProj(): FloatArray {
         val proj = FloatArray(16); val view = FloatArray(16); val out = FloatArray(16)
-        Matrix.perspectiveM(proj, 0, 35f, width.toFloat() / height.coerceAtLeast(1), 0.5f, 400f)
-        val yr = Math.toRadians(yaw.toDouble()); val pr = Math.toRadians(pitch.toDouble())
-        val ex = (dist * Math.sin(yr) * Math.cos(pr)).toFloat(); val ez = (dist * Math.cos(yr) * Math.cos(pr)).toFloat(); val ey = targetY + (dist * Math.sin(pr)).toFloat()
-        Matrix.setLookAtM(view, 0, ex, ey, ez, 0f, targetY, 0f, 0f, 1f, 0f)
+        Matrix.perspectiveM(proj, 0, fov, width.toFloat() / height.coerceAtLeast(1), 0.5f, 600f)
+        val e = eye(); Matrix.setLookAtM(view, 0, e[0], e[1], e[2], targetX, targetY, targetZ, 0f, 1f, 0f)
         Matrix.multiplyMM(out, 0, proj, 0, view, 0); return out
+    }
+    fun eye(): FloatArray {
+        val yr = Math.toRadians(yaw.toDouble()); val pr = Math.toRadians(pitch.toDouble())
+        return floatArrayOf(targetX + (dist * Math.sin(yr) * Math.cos(pr)).toFloat(), targetY + (dist * Math.sin(pr)).toFloat(), targetZ + (dist * Math.cos(yr) * Math.cos(pr)).toFloat())
+    }
+
+    /** Renders the current view off-screen at w x h (optionally with a see-through background) and hands back the picture. */
+    fun renderImage(w: Int, h: Int, transparent: Boolean, done: (android.graphics.Bitmap?) -> Unit) {
+        queueEvent { val b = runCatching { r.renderOffscreen(w, h, transparent) }.getOrNull(); post { done(b) } }; requestRender()
     }
     /** Screen point -> world point at a given normalised depth (-1 near .. 1 far). */
     fun unproject(x: Float, y: Float, ndcZ: Float): FloatArray {
@@ -60,7 +75,9 @@ class HumanView(ctx: Context, private var lib: Library) : GLSurfaceView(ctx) {
         override fun onScale(d: ScaleGestureDetector): Boolean { dist = (dist / d.scaleFactor).coerceIn(4f, 80f); requestRender(); return true }
     })
     private val gestures = GestureDetector(ctx, object : GestureDetector.SimpleOnGestureListener() {
+        override fun onSingleTapConfirmed(e: MotionEvent): Boolean { val t = onTap ?: return false; t(e.x, e.y); return true }
         override fun onDoubleTap(e: MotionEvent): Boolean {
+            if (onTap != null) return false
             faceMode = !faceMode
             if (faceMode) { dist = 7f; targetY = 15.3f; pitch = 0f } else { dist = 38f; targetY = 8.5f; pitch = 5f }
             requestRender(); return true
@@ -101,7 +118,7 @@ class HumanView(ctx: Context, private var lib: Library) : GLSurfaceView(ctx) {
         private var w = 1; private var h = 1
 
         override fun onSurfaceCreated(gl: GL10?, c: EGLConfig?) {
-            prog = program(VS, FS); glEnable(GL_DEPTH_TEST); glClearColor(0.11f, 0.12f, 0.14f, 1f)
+            prog = program(VS, FS); glEnable(GL_DEPTH_TEST)
             gpu.clear(); tex.clear()
             if (pending == null && lastParts != null) pending = lastParts
         }
@@ -110,18 +127,50 @@ class HumanView(ctx: Context, private var lib: Library) : GLSurfaceView(ctx) {
 
         override fun onDrawFrame(gl: GL10?) {
             pending?.let { upload(it); lastParts = it; pending = null }
+            drawScene(w, h, false)
+        }
+
+        fun renderOffscreen(rw: Int, rh: Int, transparent: Boolean): android.graphics.Bitmap {
+            pending?.let { upload(it); lastParts = it; pending = null }
+            val fbo = IntArray(1); val col = IntArray(1); val dep = IntArray(1)
+            glGenFramebuffers(1, fbo, 0); glBindFramebuffer(GL_FRAMEBUFFER, fbo[0])
+            glGenRenderbuffers(1, col, 0); glBindRenderbuffer(GL_RENDERBUFFER, col[0]); glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, rw, rh)
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, col[0])
+            glGenRenderbuffers(1, dep, 0); glBindRenderbuffer(GL_RENDERBUFFER, dep[0]); glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, rw, rh)
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, dep[0])
+            glViewport(0, 0, rw, rh)
+            drawScene(rw, rh, transparent)
+            val buf = ByteBuffer.allocateDirect(rw * rh * 4).order(ByteOrder.nativeOrder())
+            glReadPixels(0, 0, rw, rh, GL_RGBA, GL_UNSIGNED_BYTE, buf)
+            glBindFramebuffer(GL_FRAMEBUFFER, 0); glViewport(0, 0, w, h)
+            glDeleteRenderbuffers(1, col, 0); glDeleteRenderbuffers(1, dep, 0); glDeleteFramebuffers(1, fbo, 0)
+            val px = IntArray(rw * rh); buf.position(0)
+            for (y in 0 until rh) for (x in 0 until rw) {   // RGBA bottom-up -> ARGB top-down
+                val r8 = buf.get().toInt() and 255; val g8 = buf.get().toInt() and 255; val b8 = buf.get().toInt() and 255; val a8 = buf.get().toInt() and 255
+                px[(rh - 1 - y) * rw + x] = (a8 shl 24) or (r8 shl 16) or (g8 shl 8) or b8
+            }
+            return android.graphics.Bitmap.createBitmap(px, rw, rh, android.graphics.Bitmap.Config.ARGB_8888)
+        }
+
+        private fun drawScene(w: Int, h: Int, transparent: Boolean) {
+            val L = lighting
+            glClearColor(L.bg[0], L.bg[1], L.bg[2], if (transparent) 0f else 1f)
             glClear(GL_COLOR_BUFFER_BIT or GL_DEPTH_BUFFER_BIT)
-            Matrix.perspectiveM(proj, 0, 35f, w.toFloat() / h, 0.5f, 400f)
-            val yr = Math.toRadians(yaw.toDouble()); val pr = Math.toRadians(pitch.toDouble())
-            val ex = (dist * Math.sin(yr) * Math.cos(pr)).toFloat(); val ez = (dist * Math.cos(yr) * Math.cos(pr)).toFloat(); val ey = targetY + (dist * Math.sin(pr)).toFloat()
-            Matrix.setLookAtM(view, 0, ex, ey, ez, 0f, targetY, 0f, 0f, 1f, 0f)
+            Matrix.perspectiveM(proj, 0, fov, w.toFloat() / h, 0.5f, 600f)
+            val e = eye(); val ex = e[0]; val ey = e[1]; val ez = e[2]
+            Matrix.setLookAtM(view, 0, ex, ey, ez, targetX, targetY, targetZ, 0f, 1f, 0f)
             Matrix.multiplyMM(mvp, 0, proj, 0, view, 0)
             glUseProgram(prog)
             glUniformMatrix4fv(glGetUniformLocation(prog, "uMvp"), 1, false, mvp, 0)
             glUniform3f(glGetUniformLocation(prog, "uEye"), ex, ey, ez)
-            // opaque first, then cut-out parts (hair, brows, lashes)
-            for (pass in 0..1) for (g in gpu) {
-                if ((pass == 1) != g.part.alpha) continue
+            glUniform3fv(glGetUniformLocation(prog, "uKeyDir"), 1, L.keyDir, 0); glUniform3fv(glGetUniformLocation(prog, "uKey"), 1, L.key, 0)
+            glUniform3fv(glGetUniformLocation(prog, "uFillDir"), 1, L.fillDir, 0); glUniform3fv(glGetUniformLocation(prog, "uFill"), 1, L.fill, 0)
+            glUniform3fv(glGetUniformLocation(prog, "uAmb"), 1, L.amb, 0); glUniform3fv(glGetUniformLocation(prog, "uRim"), 1, L.rim, 0)
+            // opaque first, then cut-out parts (hair, brows, lashes), then markers drawn over everything
+            for (pass in 0..2) for (g in gpu) {
+                val marker = g.part.name.startsWith("marker")
+                if (pass != (if (marker) 2 else if (g.part.alpha) 1 else 0)) continue
+                if (marker) glDisable(GL_DEPTH_TEST) else glEnable(GL_DEPTH_TEST)
                 if (g.part.alpha || g.part.name.startsWith("my_") || g.part.name == "draft") glDisable(GL_CULL_FACE) else { glEnable(GL_CULL_FACE); glCullFace(GL_BACK) }
                 glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, texture(g.part.texture))
                 glUniform1i(glGetUniformLocation(prog, "uTex"), 0)
@@ -132,7 +181,7 @@ class HumanView(ctx: Context, private var lib: Library) : GLSurfaceView(ctx) {
                 if (skin) glUniformMatrix4fv(glGetUniformLocation(prog, "uB"), bm!!.size / 16, false, bm, 0)
                 glBindVertexArray(g.vao); glDrawElements(GL_TRIANGLES, g.nIdx, GL_UNSIGNED_INT, 0)
             }
-            glBindVertexArray(0)
+            glBindVertexArray(0); glEnable(GL_DEPTH_TEST)
         }
 
         private fun texture(path: String): Int = tex.getOrPut(path) {
@@ -164,6 +213,16 @@ class HumanView(ctx: Context, private var lib: Library) : GLSurfaceView(ctx) {
     }
 
     companion object {
+        private fun v(x: Float, y: Float, z: Float) = floatArrayOf(x, y, z)
+        private fun c(r: Float, g: Float, b: Float, k: Float) = floatArrayOf(r * k, g * k, b * k)
+        val PRESETS = listOf(
+            Lighting("Studio", v(0.4f, 0.8f, 0.6f), c(1f, 1f, 1f, 0.75f), v(-0.6f, 0.2f, -0.5f), c(1f, 1f, 1f, 0.25f), c(1f, 1f, 1f, 0.28f), c(1f, 1f, 1f, 0.12f), v(0.11f, 0.12f, 0.14f)),
+            Lighting("Daylight", v(0.3f, 0.9f, 0.5f), c(1f, 0.97f, 0.9f, 0.85f), v(-0.5f, 0.3f, -0.6f), c(0.6f, 0.7f, 0.9f, 0.3f), v(0.3f, 0.32f, 0.36f), c(1f, 1f, 1f, 0.08f), v(0.55f, 0.68f, 0.82f)),
+            Lighting("Warm lantern", v(0.7f, 0.45f, 0.35f), c(1f, 0.72f, 0.45f, 0.95f), v(-0.6f, 0.3f, -0.4f), c(0.3f, 0.35f, 0.6f, 0.3f), v(0.1f, 0.08f, 0.09f), c(1f, 0.6f, 0.35f, 0.35f), v(0.06f, 0.04f, 0.035f)),
+            Lighting("Soft bedroom", v(0.2f, 0.7f, 0.8f), c(1f, 0.86f, 0.76f, 0.65f), v(-0.7f, 0.4f, 0.2f), c(0.8f, 0.75f, 0.92f, 0.35f), v(0.24f, 0.19f, 0.2f), c(1f, 0.8f, 0.8f, 0.22f), v(0.18f, 0.13f, 0.14f)),
+            Lighting("Moonlight", v(-0.3f, 0.8f, 0.4f), c(0.55f, 0.65f, 1f, 0.7f), v(0.6f, 0.2f, -0.4f), c(1f, 0.6f, 0.4f, 0.12f), v(0.07f, 0.09f, 0.15f), c(0.6f, 0.7f, 1f, 0.4f), v(0.03f, 0.04f, 0.07f)),
+            Lighting("Sunset", v(0.85f, 0.3f, -0.2f), c(1f, 0.6f, 0.35f, 1f), v(-0.5f, 0.4f, 0.6f), c(0.35f, 0.45f, 0.75f, 0.4f), v(0.18f, 0.14f, 0.17f), c(1f, 0.5f, 0.3f, 0.3f), v(0.35f, 0.2f, 0.2f)),
+        )
         fun fb(a: FloatArray): FloatBuffer = ByteBuffer.allocateDirect(a.size * 4).order(ByteOrder.nativeOrder()).asFloatBuffer().put(a).also { it.position(0) }
         fun ib(a: IntArray): IntBuffer = ByteBuffer.allocateDirect(a.size * 4).order(ByteOrder.nativeOrder()).asIntBuffer().put(a).also { it.position(0) }
         fun program(vs: String, fs: String): Int {
@@ -181,14 +240,15 @@ void main(){
         const val FS = """#version 300 es
 precision mediump float;
 in vec3 vN; in vec2 vUv; in vec3 vP; uniform sampler2D uTex; uniform float uCut; uniform float uShine; uniform vec3 uEye; out vec4 o;
+uniform vec3 uKeyDir; uniform vec3 uKey; uniform vec3 uFillDir; uniform vec3 uFill; uniform vec3 uAmb; uniform vec3 uRim;
 void main(){
   vec4 c=texture(uTex,vUv); if(c.a<uCut) discard;
   vec3 n=normalize(vN); if(!gl_FrontFacing) n=-n; vec3 v=normalize(uEye-vP);
-  vec3 l1=normalize(vec3(0.4,0.8,0.6)); vec3 l2=normalize(vec3(-0.6,0.2,-0.5));
-  float d=max(dot(n,l1),0.0)*0.75+max(dot(n,l2),0.0)*0.25+0.28;
+  vec3 l1=normalize(uKeyDir); vec3 l2=normalize(uFillDir);
+  vec3 d=uKey*max(dot(n,l1),0.0)+uFill*max(dot(n,l2),0.0)+uAmb;
   float s=pow(max(dot(n,normalize(l1+v)),0.0),32.0)*uShine;
-  float rim=pow(1.0-max(dot(n,v),0.0),3.0)*0.12;
-  o=vec4(c.rgb*d+vec3(s+rim),1.0);
+  float rim=pow(1.0-max(dot(n,v),0.0),3.0);
+  o=vec4(c.rgb*d+uKey*s+uRim*rim,1.0);
 }"""
     }
 }

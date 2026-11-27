@@ -100,7 +100,7 @@ class MainActivity : Activity() {
             dirty.set(false)
             model.rebuild()
             val parts = PartBuilder.build(model, false)
-            runOnUiThread { if (draft == null) view3d.show(parts); updateInfo() }
+            runOnUiThread { if (draft == null && tab != "Scene") view3d.show(parts); updateInfo() }
         }
     }
     private fun updateInfo() {
@@ -108,7 +108,7 @@ class MainActivity : Activity() {
     }
 
     // ------------------------------------------------------------------ tabs
-    private val tabs = listOf("Body", "Ethnicity", "Details", "Face", "Skin", "Eyes", "Hair", "Clothes", "Animations", "Packs", "Save")
+    private val tabs = listOf("Body", "Ethnicity", "Details", "Face", "Skin", "Eyes", "Hair", "Clothes", "Animations", "Scene", "Packs", "Save")
     private fun buildTabs() {
         tabBar.removeAllViews()
         for (t in tabs) tabBar.addView(chip(t, t == tab) { tab = t; buildTabs(); showTab(t) })
@@ -171,9 +171,11 @@ class MainActivity : Activity() {
     private fun showTab(t: String) {
         content.removeAllViews()
         if (t != "Animations" && playing != null) stopClip()
+        if (t == "Scene" && view3d.onTap == null) enterScene() else if (t != "Scene" && view3d.onTap != null) leaveScene()
         val s = model.state
         when (t) {
             "Animations" -> animationsTab()
+            "Scene" -> sceneTab()
             "Body" -> {
                 s.customModel?.let { cm ->
                     header("Using your imported model: ${ModelStore.name(filesDir, cm) ?: "model"}")
@@ -351,6 +353,7 @@ class MainActivity : Activity() {
         })
         button("Export rigged .glb") { create(REQ_GLB, "${safe(s.name)}.glb", "model/gltf-binary") }
         button("Save character (.json)") { create(REQ_SAVE, "${safe(s.name)}.pockethuman.json", "application/json") }
+        button("Save to My characters (for scenes)") { saveToMyCharacters() }
         button("Load character") { startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "*/*" }, REQ_LOAD) }
         button("Randomise") { randomise() }
         button("Reset") { AlertDialog.Builder(this).setMessage("Reset everything?").setPositiveButton("Reset") { _, _ -> model.state.load(HumanState().toJson()); changed(); saveLast(); showTab(tab) }.setNegativeButton("Cancel", null).show() }
@@ -862,6 +865,269 @@ class MainActivity : Activity() {
         }
     }
 
+    // ------------------------------------------------------------------ scene (posing characters together for still images)
+    private val sceneChars = ArrayList<SceneChar>()
+    private var selChar = 0; private var selBone = -1
+    private var sceneFloor = "floor_wood"; private var sceneBed = "None"; private var sceneLight = 0
+    private var sceneTransparent = false; private var sceneRes = 0
+    private val sceneDirty = AtomicBoolean(false)
+    private var sceneParts: List<Part> = emptyList(); private var sceneMarker: List<Part> = emptyList()
+    private val sceneJoints = HashMap<SceneChar, FloatArray>()
+    private val RES = listOf(Triple("1920 × 1080", 1920, 1080), Triple("2560 × 1440", 2560, 1440), Triple("3840 × 2160 (4K)", 3840, 2160), Triple("Portrait 1080 × 1920", 1080, 1920))
+    private val FLOORS = linkedMapOf("None" to "", "Wood" to "floor_wood", "Tatami" to "floor_tatami", "Stone" to "floor_stone")
+    private val BEDS = listOf("None", "Futon", "Bed")
+
+    private fun sceneTextures() {
+        val dir = java.io.File(filesDir, "imported/scene"); dir.mkdirs()
+        for ((n, c) in SceneTextures.COLOURS + ("marker" to accent)) {
+            val f = java.io.File(dir, "$n.png"); if (f.exists()) continue
+            val b = android.graphics.Bitmap.createBitmap(4, 4, android.graphics.Bitmap.Config.ARGB_8888); b.eraseColor(c)
+            f.outputStream().use { b.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+        }
+    }
+
+    private fun sceneProps(): List<Part> {
+        val out = ArrayList<Part>(); val t = SceneTextures::path
+        if (sceneFloor.isNotEmpty()) out += SceneProps.box("floor", 0f, -0.25f, 0f, 80f, 0.5f, 80f, t(sceneFloor))
+        when (sceneBed) {
+            "Futon" -> { out += SceneProps.box("futon", 0f, 0.6f, 0f, 10f, 1.2f, 20f, t("bed_sheet")); out += SceneProps.box("pillow", 0f, 1.6f, -8.2f, 6f, 0.9f, 3f, t("bed_pillow")) }
+            "Bed" -> {
+                out += SceneProps.box("bedframe", 0f, 2f, 0f, 15f, 4f, 22f, t("bed_frame")); out += SceneProps.box("headboard", 0f, 6f, -11.2f, 15f, 8f, 0.6f, t("bed_frame"))
+                out += SceneProps.box("mattress", 0f, 4.9f, 0.3f, 14f, 1.8f, 20.5f, t("bed_sheet"))
+                out += SceneProps.box("pillow1", -3.3f, 6.25f, -8.4f, 5.5f, 0.9f, 3f, t("bed_pillow")); out += SceneProps.box("pillow2", 3.3f, 6.25f, -8.4f, 5.5f, 0.9f, 3f, t("bed_pillow"))
+            }
+        }
+        return out
+    }
+
+    private fun sceneChanged() {
+        if (sceneDirty.getAndSet(true)) return
+        worker.execute {
+            sceneDirty.set(false)
+            val all = ArrayList<Part>(); val al = lib.anims; val joints = HashMap<SceneChar, FloatArray>()
+            for (c in sceneChars.toList()) { val (ps, posed) = ScenePoser.parts(c, al); all += ps; joints[c] = posed.pos }
+            all += sceneProps()
+            val c = sceneChars.getOrNull(selChar); val jp = c?.let { joints[it] }
+            val marker = if (c != null && jp != null && selBone >= 0) listOf(SceneProps.box("marker", jp[selBone * 3], jp[selBone * 3 + 1], jp[selBone * 3 + 2], 0.7f, 0.7f, 0.7f, SceneTextures.path("marker"))) else emptyList()
+            runOnUiThread { if (tab != "Scene") return@runOnUiThread; sceneParts = all; sceneMarker = marker; sceneJoints.clear(); sceneJoints.putAll(joints); view3d.show(all + marker) }
+        }
+    }
+
+    private fun enterScene() {
+        if (playing != null) stopClip()
+        sceneTextures(); view3d.setBones(null); view3d.lighting = HumanView.PRESETS[sceneLight]
+        view3d.onTap = { x, y -> pickJoint(x, y) }
+        if (sceneChars.isEmpty()) {
+            val keep = model.state.toJson()
+            worker.execute {
+                val m = HumanModel(lib); m.state.load(keep); m.rebuild()
+                runOnUiThread { sceneChars += SceneChar(m).apply { x = -0.4f; yaw = 25f }; selChar = 0; view3d.dist = 42f; view3d.targetY = 8.5f; sceneChanged(); if (tab == "Scene") showTab("Scene") }
+            }
+        } else sceneChanged()
+    }
+    private fun leaveScene() {
+        view3d.onTap = null; view3d.lighting = HumanView.PRESETS[0]; view3d.targetX = 0f; view3d.targetZ = 0f; view3d.fov = 35f
+        changed()
+    }
+
+    /** Tap on the 3D view: select the nearest adjustable joint of either character. */
+    private fun pickJoint(x: Float, y: Float) {
+        val vp = view3d.viewProj(); var best = dp(40).toFloat(); var hit: Pair<Int, Int>? = null
+        sceneChars.forEachIndexed { ci, c ->
+            val jp = sceneJoints[c] ?: return@forEachIndexed; val bones = c.model.lib.rig.bones
+            for ((_, bn) in ScenePoser.BONES) {
+                val b = bones.indexOfFirst { it.name == bn }; if (b < 0) continue
+                val o = FloatArray(4); android.opengl.Matrix.multiplyMV(o, 0, vp, 0, floatArrayOf(jp[b * 3], jp[b * 3 + 1], jp[b * 3 + 2], 1f), 0)
+                if (o[3] <= 0f) continue
+                val sx = (o[0] / o[3] + 1f) / 2f * view3d.width; val sy = (1f - o[1] / o[3]) / 2f * view3d.height
+                val d = Math.hypot((sx - x).toDouble(), (sy - y).toDouble()).toFloat()
+                if (d < best) { best = d; hit = ci to b }
+            }
+        }
+        hit?.let { (ci, b) -> selChar = ci; selBone = b; sceneChanged(); showTab("Scene") } ?: toast("Tap closer to a joint")
+    }
+
+    private fun myCharacters(): List<java.io.File> = java.io.File(filesDir, "characters").listFiles { f -> f.name.endsWith(".json") }?.sortedBy { it.name.lowercase() } ?: emptyList()
+    private fun saveToMyCharacters() {
+        val d = java.io.File(filesDir, "characters"); d.mkdirs()
+        java.io.File(d, safe(model.state.name) + ".json").writeText(model.state.toJson().toString())
+        toast("${model.state.name} saved to My characters")
+    }
+    private fun addSceneChar(state: JSONObject) {
+        if (sceneChars.size >= 2) { toast("A scene holds two characters"); return }
+        worker.execute {
+            val m = HumanModel(lib); m.state.load(state); m.rebuild()
+            runOnUiThread { sceneChars += SceneChar(m).apply { x = 0.4f; yaw = -25f }; selChar = sceneChars.size - 1; selBone = -1; sceneChanged(); showTab("Scene") }
+        }
+    }
+
+    private fun sceneTab() {
+        val c = sceneChars.getOrNull(selChar)
+        content.addView(TextView(this).apply { setTextColor(dim); textSize = 12f; setPadding(0, dp(8), 0, dp(4))
+            text = "Pose up to two characters together and render a still picture (for Ren'Py and other visual novels). Drag to turn the view, pinch to zoom, tap a joint to pick it." })
+        if (c == null) { content.addView(TextView(this).apply { setTextColor(fg); text = "Setting up…" }); return }
+
+        header("Characters")
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        sceneChars.forEachIndexed { i, sc -> row.addView(chip(sc.label, i == selChar) { selChar = i; selBone = -1; sceneChanged(); showTab("Scene") }) }
+        if (sceneChars.size < 2) row.addView(chip("+ Add", false) {
+            val files = myCharacters()
+            val names = arrayOf("A copy of the character you're editing") + files.map { it.name.removeSuffix(".json") } + "From a saved .json file…"
+            AlertDialog.Builder(this).setTitle("Add a character").setItems(names) { _, w ->
+                when {
+                    w == 0 -> addSceneChar(model.state.toJson())
+                    w == names.size - 1 -> startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "*/*" }, REQ_SCENE_CHAR)
+                    else -> runCatching { addSceneChar(JSONObject(files[w - 1].readText())) }.onFailure { toast("Couldn't read that character") }
+                }
+            }.show()
+        })
+        if (sceneChars.size > 1) row.addView(chip("Remove ${c.label}", false) { sceneChars.removeAt(selChar); selChar = 0; selBone = -1; sceneChanged(); showTab("Scene") })
+        content.addView(HorizontalScrollView(this).apply { addView(row) })
+        button("Save the character you're editing to My characters") { saveToMyCharacters() }
+
+        header("Place ${c.label}")
+        slider("Left / right", c.x, -2f, 2f, { "%.2f m".format(it) }) { c.x = it; sceneChanged() }
+        slider("Back / front", c.z, -2f, 2f, { "%.2f m".format(it) }) { c.z = it; sceneChanged() }
+        slider("Raise", c.y, 0f, 1.5f, { "%.2f m".format(it) }) { c.y = it; sceneChanged() }
+        slider("Turn", c.yaw, -180f, 180f, { "${it.toInt()}°" }) { c.yaw = it; sceneChanged() }
+
+        header("Pose")
+        val al = lib.anims; val clip = c.pose.clip?.let { al?.clip(it) }
+        button("Starting pose: " + (clip?.label ?: "Standing (rest pose)")) {
+            if (al == null) return@button
+            val list = al.clips.sortedBy { it.label }
+            AlertDialog.Builder(this).setTitle("Start from").setItems((listOf("Standing (rest pose)") + list.map { it.label }).toTypedArray()) { _, w ->
+                c.pose.clip = if (w == 0) null else list[w - 1].name; c.pose.time = 0f; c.fitted = null; sceneChanged(); showTab("Scene")
+            }.show()
+        }
+        if (clip != null) slider("Moment in the animation", c.pose.time, 0f, clip.duration.coerceAtLeast(0.01f), { "%.2fs".format(it) }) { c.pose.time = it; sceneChanged() }
+
+        val bones = c.model.lib.rig.bones
+        val friendly = ScenePoser.BONES.associate { (n, b) -> b to n }
+        val selName = if (selBone >= 0) friendly[bones[selBone].name] ?: bones[selBone].name.removePrefix("mixamorig:") else null
+        button("Joint: " + (selName ?: "tap one on the model, or choose")) {
+            val ids = ScenePoser.BONES.map { (_, b) -> bones.indexOfFirst { it.name == b } }
+            AlertDialog.Builder(this).setTitle("Joint").setItems(ScenePoser.BONES.map { it.first }.toTypedArray()) { _, w -> selBone = ids[w]; sceneChanged(); showTab("Scene") }.show()
+        }
+        if (selBone >= 0) {
+            val d = c.pose.offsets[selBone] ?: FloatArray(3)
+            val ax = ScenePoser.axes(bones[selBone].name)
+            fun set(k: Int, v: Float) { val a = c.pose.offsets.getOrPut(selBone) { FloatArray(3) }; a[k] = v * ax.signs[k]; if (a.all { it == 0f }) c.pose.offsets.remove(selBone); sceneChanged() }
+            for (k in 0..2) slider(ax.labels[k], d[k] * ax.signs[k], -180f, 180f, { "${it.toInt()}°" }) { set(k, it) }
+            button("Reset this joint") { c.pose.offsets.remove(selBone); sceneChanged(); showTab("Scene") }
+        }
+        val mrow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        mrow.addView(chip("Copy left → right", false) { ScenePoser.mirror(c, "Left"); sceneChanged(); showTab("Scene") })
+        mrow.addView(chip("Copy right → left", false) { ScenePoser.mirror(c, "Right"); sceneChanged(); showTab("Scene") })
+        mrow.addView(chip("Reset whole pose", false) { c.pose.offsets.clear(); sceneChanged(); showTab("Scene") })
+        content.addView(HorizontalScrollView(this).apply { addView(mrow) })
+        slider("Left hand: curl fingers", ScenePoser.curlOf(c, "Left"), 0f, 1f, ::pct) { ScenePoser.setCurl(c, "Left", it); sceneChanged() }
+        slider("Right hand: curl fingers", ScenePoser.curlOf(c, "Right"), 0f, 1f, ::pct) { ScenePoser.setCurl(c, "Right", it); sceneChanged() }
+
+        header("Face")
+        val frow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        for ((n, e) in presets) frow.addView(chip(n, c.model.state.expression == e.filterValues { it > 0f }) {
+            c.model.state.expression.clear(); c.model.state.expression.putAll(e); c.invalidate(); sceneChanged(); showTab("Scene") })
+        content.addView(HorizontalScrollView(this).apply { addView(frow) })
+
+        header("Clothes and hair")
+        val st = c.model.state
+        val items = st.clothes.map { it to (lib.proxies.firstOrNull { p -> p.id == it }?.label ?: it) } +
+            listOfNotNull(st.hair?.let { it to "Hair" }, st.eyebrows?.let { it to "Eyebrows" })
+        if (items.isEmpty()) content.addView(TextView(this).apply { setTextColor(dim); text = "Nothing to take off." })
+        for ((id, label) in items) {
+            val on = id !in c.hidden
+            content.addView(TextView(this).apply { text = (if (on) "☑  " else "☐  ") + label; textSize = 15f; setTextColor(if (on) accent else fg); setPadding(dp(4), dp(10), dp(4), dp(10))
+                setOnClickListener { if (!c.hidden.remove(id)) c.hidden.add(id); c.invalidate(); sceneChanged(); showTab("Scene") } })
+        }
+        if (st.clothes.isNotEmpty()) {
+            val crow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            crow.addView(chip("Take all clothes off", false) { c.hidden.addAll(st.clothes); c.invalidate(); sceneChanged(); showTab("Scene") })
+            crow.addView(chip("Put everything on", false) { c.hidden.clear(); c.invalidate(); sceneChanged(); showTab("Scene") })
+            content.addView(HorizontalScrollView(this).apply { addView(crow) })
+        }
+
+        header("Set")
+        val srow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        for ((n, f) in FLOORS) srow.addView(chip("Floor: $n", sceneFloor == f) { sceneFloor = f; sceneChanged(); showTab("Scene") })
+        content.addView(HorizontalScrollView(this).apply { addView(srow) })
+        val brow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        for (b in BEDS) brow.addView(chip(if (b == "None") "No bed" else b, sceneBed == b) { sceneBed = b; sceneChanged(); showTab("Scene") })
+        content.addView(HorizontalScrollView(this).apply { addView(brow) })
+        content.addView(TextView(this).apply { setTextColor(dim); textSize = 12f; text = "To lie someone down, pick Hips and bend them 90°, then Raise them onto the bed." })
+
+        header("Lighting")
+        val lrow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        HumanView.PRESETS.forEachIndexed { i, l -> lrow.addView(chip(l.name, sceneLight == i) { sceneLight = i; view3d.lighting = l; showTab("Scene") }) }
+        content.addView(HorizontalScrollView(this).apply { addView(lrow) })
+
+        header("Camera")
+        slider("Zoom (lens)", view3d.fov, 15f, 60f, { "${it.toInt()}°" }) { view3d.fov = it; view3d.requestRender() }
+        slider("Look height", view3d.targetY, 0f, 20f, { "%.1f m".format(it / 10f) }) { view3d.targetY = it; view3d.requestRender() }
+        button("Centre on the characters") {
+            view3d.targetX = sceneChars.map { it.x * 10f }.average().toFloat(); view3d.targetZ = sceneChars.map { it.z * 10f }.average().toFloat(); view3d.requestRender()
+        }
+
+        header("Render a picture")
+        val rrow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        RES.forEachIndexed { i, r -> rrow.addView(chip(r.first, sceneRes == i) { sceneRes = i; showTab("Scene") }) }
+        content.addView(HorizontalScrollView(this).apply { addView(rrow) })
+        switch("See-through background (for character sprites)", sceneTransparent) { sceneTransparent = it }
+        button("Render PNG") { create(REQ_RENDER, "${safe(sceneChars.joinToString(" and ") { it.label })} scene.png", "image/png") }
+
+        header("Scenes")
+        button("Save this scene") {
+            val name = EditText(this).apply { setText(sceneChars.joinToString(" and ") { it.label }) }
+            AlertDialog.Builder(this).setTitle("Scene name").setView(name).setPositiveButton("Save") { _, _ ->
+                ScenePoser.saveScene(java.io.File(filesDir, "scenes"), name.text.toString().ifBlank { "Scene" }, sceneChars, sceneExtra()); toast("Scene saved"); showTab("Scene")
+            }.setNegativeButton("Cancel", null).show()
+        }
+        for (f in java.io.File(filesDir, "scenes").listFiles { x -> x.name.endsWith(".json") }?.sortedBy { it.name } ?: emptyList()) {
+            val line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            line.addView(TextView(this).apply { text = "○  " + f.name.removeSuffix(".json"); textSize = 15f; setTextColor(fg); setPadding(dp(4), dp(10), dp(4), dp(10))
+                setOnClickListener { loadScene(f) } }, LinearLayout.LayoutParams(0, -2, 1f))
+            line.addView(TextView(this).apply { text = "Delete"; setTextColor(accent); textSize = 14f; setPadding(dp(12), dp(10), dp(12), dp(10))
+                setOnClickListener { f.delete(); showTab("Scene") } })
+            content.addView(line)
+        }
+    }
+    // (the Switch inside switch() also calls changed(); harmless: changed() leaves the scene view alone)
+
+    private fun sceneExtra() = JSONObject().put("floor", sceneFloor).put("bed", sceneBed).put("light", sceneLight).put("transparent", sceneTransparent)
+        .put("cam", JSONObject().put("yaw", view3d.yaw.toDouble()).put("pitch", view3d.pitch.toDouble()).put("dist", view3d.dist.toDouble())
+            .put("tx", view3d.targetX.toDouble()).put("ty", view3d.targetY.toDouble()).put("tz", view3d.targetZ.toDouble()).put("fov", view3d.fov.toDouble()))
+
+    private fun loadScene(f: java.io.File) {
+        val j = runCatching { JSONObject(f.readText()) }.getOrNull() ?: run { toast("Couldn't read that scene"); return }
+        worker.execute {
+            val chars = runCatching { (0 until j.getJSONArray("chars").length()).map { SceneChar.fromJson(lib, j.getJSONArray("chars").getJSONObject(it)) } }.getOrNull()
+            runOnUiThread {
+                if (chars == null) { toast("Couldn't read that scene"); return@runOnUiThread }
+                sceneChars.clear(); sceneChars.addAll(chars); selChar = 0; selBone = -1
+                sceneFloor = j.optString("floor", "floor_wood"); sceneBed = j.optString("bed", "None"); sceneLight = j.optInt("light", 0).coerceIn(0, HumanView.PRESETS.size - 1)
+                sceneTransparent = j.optBoolean("transparent"); view3d.lighting = HumanView.PRESETS[sceneLight]
+                j.optJSONObject("cam")?.let { cm -> view3d.yaw = cm.optDouble("yaw").toFloat(); view3d.pitch = cm.optDouble("pitch").toFloat(); view3d.dist = cm.optDouble("dist").toFloat()
+                    view3d.targetX = cm.optDouble("tx").toFloat(); view3d.targetY = cm.optDouble("ty").toFloat(); view3d.targetZ = cm.optDouble("tz").toFloat(); view3d.fov = cm.optDouble("fov", 35.0).toFloat() }
+                sceneChanged(); showTab("Scene"); toast("Loaded ${j.optString("name")}")
+            }
+        }
+    }
+
+    private fun renderScene(uri: Uri) {
+        val (_, w, h) = RES[sceneRes]
+        val dlg = AlertDialog.Builder(this).setMessage("Rendering ${w} × ${h}…").setCancelable(false).show()
+        view3d.show(sceneParts)    // no joint marker in the picture
+        view3d.renderImage(w, h, sceneTransparent) { bmp ->
+            view3d.show(sceneParts + sceneMarker)
+            if (bmp == null) { dlg.dismiss(); toast("Render failed"); return@renderImage }
+            worker.execute {
+                val err = runCatching { contentResolver.openOutputStream(uri)!!.use { bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) } }.exceptionOrNull()
+                bmp.recycle()
+                runOnUiThread { dlg.dismiss(); toast(if (err == null) "Picture saved" else "Couldn't save: ${err.message}") }
+            }
+        }
+    }
+
     private fun runImport(title: String, open: ((String) -> Unit) -> java.io.InputStream, id: String, license: String) {
         val msg = TextView(this).apply { setTextColor(fg); setPadding(dp(20), dp(10), dp(20), dp(10)); text = "Starting…" }
         val dlg = AlertDialog.Builder(this).setTitle(title).setView(msg).setCancelable(false).show()
@@ -939,6 +1205,9 @@ class MainActivity : Activity() {
                     runOnUiThread { d.dismiss(); toast(if (err == null) "Exported" else "Export failed: ${err.message}") }
                 }
             }
+            REQ_RENDER -> renderScene(uri)
+            REQ_SCENE_CHAR -> runCatching { JSONObject(contentResolver.openInputStream(uri)!!.use { String(it.readBytes()) }) }
+                .onSuccess { addSceneChar(it) }.onFailure { toast("Couldn't read that file") }
             REQ_SAVE -> runCatching { contentResolver.openOutputStream(uri)!!.use { it.write(model.state.toJson().toString(2).toByteArray()) } }
                 .onSuccess { toast("Saved") }.onFailure { toast("Save failed: ${it.message}") }
             REQ_ASIS -> {
@@ -985,5 +1254,5 @@ class MainActivity : Activity() {
     override fun onPause() { super.onPause(); if (::view3d.isInitialized) view3d.onPause(); if (::model.isInitialized) saveLast() }
     override fun onResume() { super.onResume(); if (::view3d.isInitialized) view3d.onResume() }
 
-    companion object { const val REQ_GLB = 1; const val REQ_SAVE = 2; const val REQ_LOAD = 3; const val REQ_PACK = 4; const val REQ_OUTFIT = 5; const val REQ_OUTFIT_TEX = 6; const val REQ_ASIS = 7 }
+    companion object { const val REQ_GLB = 1; const val REQ_SAVE = 2; const val REQ_LOAD = 3; const val REQ_PACK = 4; const val REQ_OUTFIT = 5; const val REQ_OUTFIT_TEX = 6; const val REQ_ASIS = 7; const val REQ_RENDER = 8; const val REQ_SCENE_CHAR = 9 }
 }
