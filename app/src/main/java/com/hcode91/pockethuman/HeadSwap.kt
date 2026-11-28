@@ -15,6 +15,10 @@ import java.nio.ByteOrder
  *     (expressions, blinks, the iPhone-style set), in the app and in exports.
  *  4. Blend the neck seam into the body, shape and colour, and match the head's skin tone to the body.
  *  5. Optionally put the app's own eyeballs and lashes in, so the eyes can blink and look around.
+ *
+ * Or "wrap": no new mesh at all. The PocketHuman head itself is shrink-wrapped to the new head's shape (skipping its
+ * hair) and the new face is painted onto the body skin, so the head is still the app's own: every expression, blink,
+ * the app's eyes, teeth, brows and hair work exactly as on any PocketHuman character.
  */
 class HeadData(
     val id: String, val name: String,
@@ -26,7 +30,9 @@ class HeadData(
     val lids: IntArray = IntArray(0),                              // app eyelid vertices kept (moved into the new head) so the eyes can blink
     val lidTexture: String? = null,                                // the body skin tinted to the new face, for those eyelids
     val bodyTexture: String? = null,                               // the body skin tinted to the new head's tone ("body to head")
-    val bodySource: String? = null                                 // ...made from this skin texture (used only while it's still the skin)
+    val bodySource: String? = null,                                // ...made from this skin texture (used only while it's still the skin)
+    val wrap: Boolean = false,                                     // "wrap": no new mesh; the app's own head takes the shape (disp) and the face (bodyTexture)
+    val keepBrows: Boolean = false                                 // wrap: keep the app's eyebrows over the painted ones
 ) {
     val n get() = uv.size / 2
     /** welded neighbours of each vertex (for smoothing the normals of noisy AI surfaces) */
@@ -50,12 +56,16 @@ object HeadSwap {
         var appEyes = true
         var eyeUp = 0f; var eyeApart = 0f; var eyeDepth = 0f   // fine-tuning of where the app's eyes sit (dm)
         var lidShade = 0.82f                                  // brightness of the app's eyelids against the new face
+        var wrap = false                                      // shape and paint the app's own head instead of replacing it
+        var keepBrows = false                                 // wrap: keep the app's eyebrows
         fun toJson() = JSONObject().put("turn", turn).put("size", size.toDouble()).put("up", up.toDouble()).put("forward", forward.toDouble())
             .put("side", side.toDouble()).put("tilt", tilt.toDouble()).put("skinMatch", skinMatch.toDouble()).put("bodyToHead", bodyToHead).put("appEyes", appEyes)
             .put("eyeUp", eyeUp.toDouble()).put("eyeApart", eyeApart.toDouble()).put("eyeDepth", eyeDepth.toDouble()).put("lidShade", lidShade.toDouble())
+            .put("wrap", wrap).put("keepBrows", keepBrows)
         fun load(j: JSONObject) { turn = j.optInt("turn"); size = j.optDouble("size", 1.0).toFloat(); up = j.optDouble("up").toFloat(); forward = j.optDouble("forward").toFloat()
             side = j.optDouble("side").toFloat(); tilt = j.optDouble("tilt").toFloat(); skinMatch = j.optDouble("skinMatch", 1.0).toFloat(); bodyToHead = j.optBoolean("bodyToHead"); appEyes = j.optBoolean("appEyes", true)
-            eyeUp = j.optDouble("eyeUp").toFloat(); eyeApart = j.optDouble("eyeApart").toFloat(); eyeDepth = j.optDouble("eyeDepth").toFloat(); lidShade = j.optDouble("lidShade", 0.82).toFloat() }
+            eyeUp = j.optDouble("eyeUp").toFloat(); eyeApart = j.optDouble("eyeApart").toFloat(); eyeDepth = j.optDouble("eyeDepth").toFloat(); lidShade = j.optDouble("lidShade", 0.82).toFloat()
+            wrap = j.optBoolean("wrap"); keepBrows = j.optBoolean("keepBrows") }
     }
 
     /** The cut-off head, in decimetres, with the middle of the neck cut at the origin. */
@@ -339,12 +349,25 @@ object HeadSwap {
             }
         }
         val pinned = BooleanArray(nV) { inH[it] && V[it * 3 + 1] < ref.cutY - 0.2f }
+        val eyeY = if (eyeSpheres.isEmpty()) ref.nose + 0.4f else eyeSpheres.map { it[1] }.average().toFloat()
+        /** wrap: the new head's own hair isn't the skull (the app's hair goes on top), so it doesn't pull the head out */
+        fun isHair(h: MeshQuery.Hit, y: Float): Boolean {
+            if (h.dist > 0.6f) return true
+            if (img == null || y < eyeY - 0.5f) return false
+            val ta = prep.tris[h.tri * 3]; val tb = prep.tris[h.tri * 3 + 1]; val tc = prep.tris[h.tri * 3 + 2]
+            val u = h.w0 * prep.uv[ta * 2] + h.w1 * prep.uv[tb * 2] + h.w2 * prep.uv[tc * 2]
+            val v = h.w0 * prep.uv[ta * 2 + 1] + h.w1 * prep.uv[tb * 2 + 1] + h.w2 * prep.uv[tc * 2 + 1]
+            val (iw, ih, ip) = img
+            val c = ip[(v.coerceIn(0f, 0.9999f) * ih).toInt() * iw + (u.coerceIn(0f, 0.9999f) * iw).toInt()]
+            return !OutfitDraft.isSkinColour(c, 0.55f)
+        }
         val tmp = FloatArray(nV * 3)
         for (it in 0 until 16) {
             for (i in hv) {
                 if (pinned[i]) continue
                 val px = V[i * 3] + disp[i * 3]; val py = V[i * 3 + 1] + disp[i * 3 + 1]; val pz = V[i * 3 + 2] + disp[i * 3 + 2]
                 val h = mq.nearest(px, py, pz, 1.2f) ?: continue
+                if (p.wrap && isHair(h, V[i * 3 + 1])) continue
                 val ta = prep.tris[h.tri * 3]; val tb = prep.tris[h.tri * 3 + 1]; val tc = prep.tris[h.tri * 3 + 2]
                 val nx = h.w0 * mn[ta * 3] + h.w1 * mn[tb * 3] + h.w2 * mn[tc * 3]; val ny = h.w0 * mn[ta * 3 + 1] + h.w1 * mn[tb * 3 + 1] + h.w2 * mn[tc * 3 + 1]; val nz = h.w0 * mn[ta * 3 + 2] + h.w1 * mn[tb * 3 + 2] + h.w2 * mn[tc * 3 + 2]
                 if (nx * vn[i * 3] + ny * vn[i * 3 + 1] + nz * vn[i * 3 + 2] < 0.1f) continue     // facing the other way: let smoothing carry it
@@ -369,6 +392,7 @@ object HeadSwap {
             for (j in 13380 until nV) { val dx = V[j * 3] - e[0]; val dy = V[j * 3 + 1] - e[1]; val dz = V[j * 3 + 2] - e[2]
                 if (dx * dx + dy * dy + dz * dz < (1.4f * e[3]) * (1.4f * e[3])) { disp[j * 3] = ax; disp[j * 3 + 1] = ay; disp[j * 3 + 2] = az; helperMoved.add(j) } }
         }
+        if (p.wrap) return buildWrap(model, prep, p, id, name, filesDir, decoder, writer, progress, ref, V, hv, inH, disp, helperMoved, eyeSpheres, eyeShift, mq, img, eyeY)
         val W = V.copyOf(); for (i in hv) for (k in 0..2) W[i * 3 + k] += disp[i * 3 + k]
         for (j in helperMoved) for (k in 0..2) W[j * 3 + k] += disp[j * 3 + k]
 
@@ -568,6 +592,137 @@ object HeadSwap {
         return data
     }
 
+    /**
+     * "Wrap": the app's head keeps the shape it was wrapped to, and the new face is painted onto (a copy of) the body skin.
+     */
+    private fun buildWrap(model: HumanModel, prep: Prepared, p: Params, id: String, name: String, filesDir: File,
+                          decoder: ImageDecoder, writer: ImageWriter, progress: (String) -> Unit, ref: AppRef, V: FloatArray,
+                          hv: IntArray, inH: BooleanArray, disp: FloatArray, helperMoved: ArrayList<Int>,
+                          eyeSpheres: List<FloatArray>, eyeShift: ArrayList<FloatArray>, mq: MeshQuery,
+                          img: Triple<Int, Int, IntArray>?, eyeY: Float): HeadData {
+        val lib = model.lib; val bm = lib.base; val nV = bm.nV
+        // the eyelids keep their own shape and ride with their eyeball, fading into the wrapped skin around them
+        for ((ei, e) in eyeSpheres.withIndex()) { val sh = eyeShift.getOrNull(ei) ?: continue
+            for (i in hv) {
+                val dx = V[i * 3] - e[0]; val dy = V[i * 3 + 1] - e[1]; val dz = V[i * 3 + 2] - e[2]; if (dz < -0.4f * e[3]) continue
+                val m = Math.sqrt(((dx * dx) / (1.3f * 1.3f * e[3] * e[3]) + (dy * dy) / (e[3] * e[3])).toDouble()).toFloat()
+                val wl = 1f - smooth(1.0f, 1.7f, m); if (wl <= 0f) continue
+                for (k in 0..2) disp[i * 3 + k] += (sh[k] - disp[i * 3 + k]) * wl
+            } }
+        // the mouth's insides (teeth, tongue) move as one piece with the lips in front of them, so they stay behind the lips
+        val moved = helperMoved.toHashSet()
+        run {
+            val mouth = (13380 until nV).filter { it !in moved && V[it * 3 + 1] > ref.cutY - 0.3f && V[it * 3 + 1] < eyeY - 0.4f }
+            if (mouth.isEmpty()) return@run
+            var cx = 0f; var cy = 0f; var cz = 0f; for (j in mouth) { cx += V[j * 3]; cy += V[j * 3 + 1]; cz += V[j * 3 + 2] }
+            cx /= mouth.size; cy /= mouth.size; cz /= mouth.size
+            val sh = FloatArray(3); var c = 0
+            for (i in hv) { val dx = V[i * 3] - cx; val dy = V[i * 3 + 1] - cy; val dz = V[i * 3 + 2] - cz
+                if (dz > 0f && dx * dx + dy * dy < 0.45f * 0.45f && dz < 1.2f) { for (k in 0..2) sh[k] += disp[i * 3 + k]; c++ } }
+            if (c == 0) return@run
+            for (k in 0..2) sh[k] /= c
+            // a fraction of the way further back: AI faces are often flatter at the mouth than the app's
+            for (j in mouth) { for (k in 0..2) disp[j * 3 + k] = sh[k]; disp[j * 3 + 2] -= 0.04f; moved.add(j) }
+            debug?.invoke("mouth insides: ${mouth.size} verts moved ${sh.joinToString { "%.2f".format(it) }} from $c lip verts")
+        }
+        val W = V.copyOf(); for (i in hv) for (k in 0..2) W[i * 3 + k] += disp[i * 3 + k]
+        for (j in moved) for (k in 0..2) W[j * 3 + k] += disp[j * 3 + k]
+
+        // --- paint the new face onto a copy of the body skin
+        progress("Painting the face…")
+        val dir = File(filesDir, "imported/my_heads/$id").apply { deleteRecursively(); mkdirs() }
+        val skinTex = model.bodyTexture(lib.skins[model.state.skin.coerceIn(0, lib.skins.size - 1)])
+        val sk = decoder.decode(lib.am.bytes(skinTex)) ?: error("Couldn't read the skin texture")
+        val (sw, shh, spx) = sk
+        val out = spx.copyOf()
+        if (img != null) {
+            val (iw, ih, ip) = img
+            fun bil(u: Float, v: Float): Int {
+                val x = (u.coerceIn(0f, 1f) * iw - 0.5f).coerceIn(0f, iw - 1.001f); val y = (v.coerceIn(0f, 1f) * ih - 0.5f).coerceIn(0f, ih - 1.001f)
+                val x0 = x.toInt(); val y0 = y.toInt(); val fx = x - x0; val fy = y - y0
+                val x1 = minOf(x0 + 1, iw - 1); val y1 = minOf(y0 + 1, ih - 1)
+                val a = ip[y0 * iw + x0]; val b = ip[y0 * iw + x1]; val c = ip[y1 * iw + x0]; val d = ip[y1 * iw + x1]
+                var o = 0xff000000.toInt()
+                for (k in 0..2) { val sh = 16 - 8 * k
+                    val t = ((a shr sh) and 255) * (1 - fx) * (1 - fy) + ((b shr sh) and 255) * fx * (1 - fy) + ((c shr sh) and 255) * (1 - fx) * fy + ((d shr sh) and 255) * fx * fy
+                    o = o or (t.toInt().coerceIn(0, 255) shl sh) }
+                return o
+            }
+            fun colourAt(h: MeshQuery.Hit): Int {
+                val ta = prep.tris[h.tri * 3]; val tb = prep.tris[h.tri * 3 + 1]; val tc = prep.tris[h.tri * 3 + 2]
+                return bil(h.w0 * prep.uv[ta * 2] + h.w1 * prep.uv[tb * 2] + h.w2 * prep.uv[tc * 2], h.w0 * prep.uv[ta * 2 + 1] + h.w1 * prep.uv[tb * 2 + 1] + h.w2 * prep.uv[tc * 2 + 1])
+            }
+            // a body UV for each base vertex
+            val buv = FloatArray(nV * 2) { -1f }
+            for (r in bm.renderMap.indices) { val b = bm.renderMap[r]; if (buv[b * 2] < 0) { buv[b * 2] = bm.uv[r * 2]; buv[b * 2 + 1] = bm.uv[r * 2 + 1] } }
+            // skin tones of both over the front of the face (like with like: the same points on both), medians
+            val bq = BodyQuery(model)
+            val hs = Array(3) { ArrayList<Int>() }; val bs = Array(3) { ArrayList<Int>() }
+            for (i in hv) { val y = W[i * 3 + 1]; if (y < ref.cutY + 0.1f || y > eyeY + 0.5f || Math.abs(W[i * 3] - ref.ax) > 0.7f || bq.vn[i * 3 + 2] < 0.3f || buv[i * 2] < 0) continue
+                val h = mq.nearest(W[i * 3], y, W[i * 3 + 2], 0.25f) ?: continue
+                val hc = colourAt(h); if (!OutfitDraft.isSkinColour(hc, 0.6f)) continue
+                val bc = spx[(buv[i * 2 + 1].coerceIn(0f, 0.9999f) * shh).toInt() * sw + (buv[i * 2].coerceIn(0f, 0.9999f) * sw).toInt()]
+                for (k in 0..2) { hs[k].add((hc shr (16 - 8 * k)) and 255); bs[k].add((bc shr (16 - 8 * k)) and 255) } }
+            val cnt = hs[0].size
+            fun med(l: ArrayList<Int>) = if (l.isEmpty()) 1.0 else l.sorted()[l.size / 2].toDouble()
+            val mHead = DoubleArray(3) { med(hs[it]) }; val mBody = DoubleArray(3) { med(bs[it]) }
+            debug?.invoke("wrap skin: head ${mHead.toList()} body ${mBody.toList()} n $cnt")
+            fun tint(c: Int, g: FloatArray): Int { var o = c and 0xff000000.toInt()
+                for (k in 0..2) o = o or ((((c shr (16 - 8 * k)) and 255) * g[k]).toInt().coerceIn(0, 255) shl (16 - 8 * k)); return o }
+            val ok = cnt >= 10 && p.skinMatch > 0f
+            // body to head: the whole body skin takes the face's tone; head to body: the face's skin takes the body's
+            if (ok && p.bodyToHead) { val g = FloatArray(3) { k -> (1f + ((mHead[k] / mBody[k].coerceAtLeast(1.0)).toFloat() - 1f) * p.skinMatch).coerceIn(0.4f, 2.5f) }
+                for (i in out.indices) out[i] = tint(out[i], g) }
+            val gain = FloatArray(3) { k -> if (!ok || p.bodyToHead) 1f else (1f + ((mBody[k] / mHead[k].coerceAtLeast(1.0)).toFloat() - 1f) * p.skinMatch).coerceIn(0.3f, 2.5f) }
+            val wn = weldedNormals(W, bq.tris, nV)
+            run { var sg = 0.0; for (i in hv) sg += wn[i * 3] * bq.vn[i * 3] + wn[i * 3 + 1] * bq.vn[i * 3 + 1] + wn[i * 3 + 2] * bq.vn[i * 3 + 2]; if (sg < 0) for (i in wn.indices) wn[i] = -wn[i] }
+            val centres = eyeSpheres.mapIndexed { ei, e -> val sh = eyeShift.getOrNull(ei) ?: FloatArray(3); floatArrayOf(e[0] + sh[0], e[1] + sh[1], e[2] + sh[2], e[3]) }
+            var t = 0
+            while (t < bm.tris.size) {
+                val a = bm.tris[t]; val b = bm.tris[t + 1]; val c = bm.tris[t + 2]; t += 3
+                val ra = bm.renderMap[a]; val rb = bm.renderMap[b]; val rc = bm.renderMap[c]
+                if (!(inH[ra] && inH[rb] && inH[rc]) || maxOf(W[ra * 3 + 1], W[rb * 3 + 1], W[rc * 3 + 1]) < ref.cutY - 0.35f) continue
+                paintTri(out, sw, shh, bm.uv, a, b, c) { wa, wb, wc, old ->
+                    val px = wa * W[ra * 3] + wb * W[rb * 3] + wc * W[rc * 3]; val py = wa * W[ra * 3 + 1] + wb * W[rb * 3 + 1] + wc * W[rc * 3 + 1]; val pz = wa * W[ra * 3 + 2] + wb * W[rb * 3 + 2] + wc * W[rc * 3 + 2]
+                    val f0 = smooth(ref.cutY - 0.3f, ref.cutY + 0.2f, py)
+                    val h = if (f0 > 0f) mq.nearest(px, py, pz, 0.4f) else null
+                    if (h == null) old else {
+                        val nz = wa * wn[ra * 3 + 2] + wb * wn[rb * 3 + 2] + wc * wn[rc * 3 + 2]
+                        val col = colourAt(h); val skin = OutfitDraft.isSkinColour(col, 0.55f)
+                        // painted eyeballs (the app's own eyes are behind the lids) and the new head's hair stay off the skin
+                        val inEye = centres.any { e -> val dx = px - e[0]; val dy = py - e[1]
+                            (dx * dx) / (1.1f * 1.1f * e[3] * e[3]) + (dy * dy) / (0.75f * 0.75f * e[3] * e[3]) < 1f }
+                        // the face (brows, lips, make-up and all) is painted as it is; around it only skin (ears, neck, jaw),
+                        // and never the new head's hair, which floats off the skin because the wrap skipped it
+                        // only the face itself is painted, faded out at its edges: hair often passes as skin colour, and the
+                        // sides and top of the head are under the app's hair anyway
+                        val ey0 = (ref.chin + eyeY + 0.6f) / 2; val ehw = 0.78f; val ehh = (eyeY + 0.6f - ref.chin) / 2 + 0.2f
+                        val ex = (px - ref.ax) / ehw; val eyy = (py - ey0) / ehh
+                        val mask = (1f - smooth(0.8f, 1.05f, Math.sqrt((ex * ex + eyy * eyy).toDouble()).toFloat())) * smooth(0.05f, 0.35f, nz)
+                        val r8 = (col shr 16) and 255; val g8 = (col shr 8) and 255; val b8 = col and 255
+                        val mx = maxOf(r8, g8, b8); val mn = minOf(r8, g8, b8)
+                        val whiteish = mx > 165 && (mx - mn) < 0.25f * mx     // painted teeth and eye whites
+                        if (mask <= 0f || (!skin && (inEye || h.dist > 0.08f || (whiteish && py < eyeY - 0.3f)))) old else {
+                            val f = f0 * mask * (1f - smooth(0.1f, 0.3f, h.dist))
+                            val cc = tint(col, gain)     // everything the same way, so shading and make-up keep their look
+                            var o = old and 0xff000000.toInt()
+                            for (k in 0..2) { val s2 = 16 - 8 * k; o = o or ((((old shr s2) and 255) * (1 - f) + ((cc shr s2) and 255) * f).toInt().coerceIn(0, 255) shl s2) }
+                            o
+                        }
+                    }
+                }
+            }
+        }
+        val texPath = "imported/my_heads/$id/" + writer.write(out, sw, shh, dir, "skin")
+        val dIdx = (hv.toList() + moved).distinct().filter { i -> Math.abs(disp[i * 3]) + Math.abs(disp[i * 3 + 1]) + Math.abs(disp[i * 3 + 2]) > 1e-5f }.toIntArray()
+        val dVal = FloatArray(dIdx.size * 3) { disp[dIdx[it / 3] * 3 + it % 3] }
+        debug?.invoke("wrap: moved ${dIdx.size} vertices")
+        val data = HeadData(id, name, IntArray(0), FloatArray(0), FloatArray(0), FloatArray(0), IntArray(0), texPath, IntArray(0), dIdx, dVal,
+            true, IntArray(0), null, texPath, skinTex, wrap = true, keepBrows = p.keepBrows)
+        HeadStore.save(filesDir, data, p)
+        return data
+    }
+
     /** Eye centres (x, y, z each) of the two eyeballs of a fitted eye proxy, with radius: [x, y, z, r] per eye. */
     private fun spheres(at: FloatArray, n: Int, ax: Float): List<FloatArray> {
         val l = ArrayList<Int>(); val r = ArrayList<Int>()
@@ -652,7 +807,7 @@ object HeadStore {
         bb.putInt(d.dispIdx.size); d.dispIdx.forEach { bb.putInt(it) }; d.disp.forEach { bb.putFloat(it) }
         bb.putInt(d.lids.size); d.lids.forEach { bb.putInt(it) }
         File(dir, "head.bin").writeBytes(bb.array())
-        File(dir, "head.json").writeText(JSONObject().put("name", d.name).put("texture", d.texture).put("lidTexture", d.lidTexture ?: JSONObject.NULL).put("bodyTexture", d.bodyTexture ?: JSONObject.NULL).put("bodySource", d.bodySource ?: JSONObject.NULL).put("appEyes", d.appEyes).put("params", p.toJson()).toString())
+        File(dir, "head.json").writeText(JSONObject().put("name", d.name).put("texture", d.texture).put("lidTexture", d.lidTexture ?: JSONObject.NULL).put("bodyTexture", d.bodyTexture ?: JSONObject.NULL).put("bodySource", d.bodySource ?: JSONObject.NULL).put("appEyes", d.appEyes).put("wrap", d.wrap).put("keepBrows", d.keepBrows).put("params", p.toJson()).toString())
     }
 
     fun load(filesDir: File, id: String): HeadData? = runCatching {
@@ -664,7 +819,8 @@ object HeadStore {
         val nd = bb.int; val di = IntArray(nd) { bb.int }; val dv = FloatArray(nd * 3) { bb.float }
         val lids = if (bb.remaining() >= 4) IntArray(bb.int) { bb.int } else IntArray(0)
         HeadData(id, meta.optString("name", id), refs, w, off, uv, tris, meta.getString("texture"), hidden, di, dv, meta.optBoolean("appEyes", false), lids, if (meta.isNull("lidTexture")) null else meta.optString("lidTexture").ifEmpty { null },
-            if (!meta.has("bodyTexture") || meta.isNull("bodyTexture")) null else meta.optString("bodyTexture"), if (!meta.has("bodySource") || meta.isNull("bodySource")) null else meta.optString("bodySource"))
+            if (!meta.has("bodyTexture") || meta.isNull("bodyTexture")) null else meta.optString("bodyTexture"), if (!meta.has("bodySource") || meta.isNull("bodySource")) null else meta.optString("bodySource"),
+            meta.optBoolean("wrap"), meta.optBoolean("keepBrows"))
     }.getOrNull()
 
     fun list(filesDir: File): List<Pair<String, String>> =

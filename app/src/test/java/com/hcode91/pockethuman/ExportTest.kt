@@ -484,7 +484,102 @@ class SceneCastTest {
     }
 }
 
+class StencilPaintTest {
+    private fun lookAtProj(eye: FloatArray, at: FloatArray, fovDeg: Float, aspect: Float): FloatArray {
+        // column-major proj * view (same as android.opengl.Matrix.perspectiveM + setLookAtM)
+        val f = 1f / Math.tan(Math.toRadians(fovDeg / 2.0)).toFloat(); val n = 0.5f; val fa = 600f
+        val P = floatArrayOf(f / aspect, 0f, 0f, 0f, 0f, f, 0f, 0f, 0f, 0f, (fa + n) / (n - fa), -1f, 0f, 0f, 2 * fa * n / (n - fa), 0f)
+        var zx = eye[0] - at[0]; var zy = eye[1] - at[1]; var zz = eye[2] - at[2]; val zl = Math.sqrt((zx * zx + zy * zy + zz * zz).toDouble()).toFloat(); zx /= zl; zy /= zl; zz /= zl
+        var xx = 1f * zz - 0f * zy; var xy = 0f * zx - 0f * zz; var xz = 0f * zy - 1f * zx
+        val xl = Math.sqrt((xx * xx + xy * xy + xz * xz).toDouble()).toFloat(); xx /= xl; xy /= xl; xz /= xl
+        val yx = zy * xz - zz * xy; val yy = zz * xx - zx * xz; val yz = zx * xy - zy * xx
+        val V = floatArrayOf(xx, yx, zx, 0f, xy, yy, zy, 0f, xz, yz, zz, 0f,
+            -(xx * eye[0] + xy * eye[1] + xz * eye[2]), -(yx * eye[0] + yy * eye[1] + yz * eye[2]), -(zx * eye[0] + zy * eye[1] + zz * eye[2]), 1f)
+        val o = FloatArray(16); for (c in 0..3) for (r in 0..3) { var sum = 0f; for (k in 0..3) sum += P[k * 4 + r] * V[c * 4 + k]; o[c * 4 + r] = sum }
+        return o
+    }
+    @Test fun paintsThroughStencil() {
+        if (!File("/tmp/wrap_test").exists()) return
+        val tmp = java.nio.file.Files.createTempDirectory("phs").toFile()
+        val ct = CharacterTest()
+        val srcOf = AssetSource { p -> if (p.startsWith("imported/")) File(tmp, p).readBytes() else File("src/main/assets/ph", p).readBytes() }
+        val lib = Library(srcOf, tmp)
+        val m = HumanModel(lib).apply { state.macro["gender"] = 0f; rebuild() }
+        val body = PartBuilder.build(m, false).first { it.name == "body" }
+        val texBytes = lib.am.bytes(body.texture)
+        val dec = File.createTempFile("skin", ".png").apply { writeBytes(texBytes) }; val raw = File.createTempFile("skin", ".raw")
+        ProcessBuilder("python3", "-c", "import sys,struct;from PIL import Image;im=Image.open(sys.argv[1]).convert('RGBA');w,h=im.size;open(sys.argv[2],'wb').write(struct.pack('<II',w,h)+im.tobytes())", dec.path, raw.path).inheritIO().start().waitFor()
+        val rb = raw.readBytes(); val bb = java.nio.ByteBuffer.wrap(rb).order(java.nio.ByteOrder.LITTLE_ENDIAN); val w = bb.int; val h = bb.int
+        val base = IntArray(w * h) { i -> val o = 8 + i * 4; ((rb[o + 3].toInt() and 255) shl 24) or ((rb[o].toInt() and 255) shl 16) or ((rb[o + 1].toInt() and 255) shl 8) or (rb[o + 2].toInt() and 255) }
+        val p = SkinPainter(w, h, base, body.pos, body.uv, body.tris)
+        // the stencil: 200x200, red left half, blue right half, a white stripe across the middle
+        val pw = 200; val sp = IntArray(pw * pw) { i -> val x = i % pw; val y = i / pw; if (Math.abs(y - 100) < 8) 0xffffffff.toInt() else if (x < 100) 0xffdd2222.toInt() else 0xff2244dd.toInt() }
+        // camera in front of the face; the picture covers the middle of an 800x800 view at 2x
+        val top = (0 until body.pos.size / 3).maxOf { body.pos[it * 3 + 1] }; val fy = top - 1.3f
+        val eye = floatArrayOf(0f, fy, 7f); val vp = lookAtProj(eye, floatArrayOf(0f, fy, 0f), 35f, 1f)
+        val st = SkinPainter.Stencil(pw, pw, sp, floatArrayOf(0.5f, 0f, -100f, 0f, 0.5f, -100f))
+        // unproject screen points: invert by ray marching along the camera axis is overkill; use the camera geometry directly
+        val tanH = Math.tan(Math.toRadians(17.5)).toFloat()
+        fun ray(sx: Float, sy: Float): Pair<FloatArray, FloatArray> { val nx = sx / 400f - 1f; val ny = 1f - sy / 400f; return eye to floatArrayOf(nx * tanH, ny * tanH, -1f) }
+        p.strokeBegin()
+        var painted = 0
+        for (sy in 250..550 step 25) for (sx in 250..550 step 25) {
+            val (o, d) = ray(sx.toFloat(), sy.toFloat()); val hit = p.pick(o, d) ?: continue
+            val dist = Math.sqrt(((hit[0] - eye[0]) * (hit[0] - eye[0]) + (hit[1] - eye[1]) * (hit[1] - eye[1]) + (hit[2] - eye[2]) * (hit[2] - eye[2])).toDouble()).toFloat()
+            val wr = 40f / 400f * tanH * dist
+            if (p.dab(hit, wr, sx.toFloat(), sy.toFloat(), 40f, vp, 800, 800, eye, st, false, 1f, 0.3f) != null) painted++
+        }
+        p.strokeEnd()
+        run { val (o, d) = ray(400f, 400f); val hit = p.pick(o, d); println("centre hit ${hit?.joinToString()}")
+            val vy = body.pos.filterIndexed { i, _ -> i % 3 == 1 }; println("body y ${vy.minOrNull()}..${vy.maxOrNull()} z ${body.pos.filterIndexed { i, _ -> i % 3 == 2 }.maxOrNull()}") }
+        println("stencil: $painted dabs painted")
+        assertTrue(painted > 50)
+        val dir = File(tmp, "imported/painted/t1").apply { mkdirs() }
+        File(dir, "skin.png").writeBytes(ct.png(p.px, w, h))
+        m.state.paintSkin = "imported/painted/t1/skin.png"; m.state.paintFrom = body.texture
+        File("/tmp/wrap").mkdirs()
+        File("/tmp/wrap/stencil.glb").outputStream().use { GlbExporter.write(m, it, only = PartBuilder.build(m, true, withExpression = true), anims = emptyList(), faceShapes = false) }
+        // undo puts it back
+        p.undo(); var diff = 0; for (i in base.indices) if (p.px[i] != base[i]) diff++
+        println("after undo: $diff pixels differ"); assertTrue(diff == 0)
+    }
+}
+
 class HeadSwapTest {
+    @Test fun wrapsHead() {
+        val src = File(System.getProperty("headsrc") ?: "/tmp/headsrc.glb"); if (!src.exists() || !File("/tmp/wrap_test").exists()) return
+        val tmp = java.nio.file.Files.createTempDirectory("phw").toFile()
+        val ct = CharacterTest()
+        val dec = ImageDecoder { b -> val inF = File.createTempFile("img", ".bin").apply { writeBytes(b) }; val outF = File.createTempFile("img", ".raw")
+            ProcessBuilder("python3", "-c", "import sys,struct;from PIL import Image;im=Image.open(sys.argv[1]).convert('RGBA');w,h=im.size;open(sys.argv[2],'wb').write(struct.pack('<II',w,h)+im.tobytes())", inF.path, outF.path).inheritIO().start().waitFor()
+            val r = outF.readBytes(); inF.delete(); outF.delete(); if (r.size < 8) null else { val bb = java.nio.ByteBuffer.wrap(r).order(java.nio.ByteOrder.LITTLE_ENDIAN); val w = bb.int; val h = bb.int
+                Triple(w, h, IntArray(w * h) { i -> val o = 8 + i * 4; ((r[o + 3].toInt() and 255) shl 24) or ((r[o].toInt() and 255) shl 16) or ((r[o + 1].toInt() and 255) shl 8) or (r[o + 2].toInt() and 255) }) } }
+        val writer = ImageWriter { a, w, h, dir, base -> dir.mkdirs(); File(dir, "$base.png").writeBytes(ct.png(a, w, h)); "$base.png" }
+        val srcOf = AssetSource { p -> if (p.startsWith("imported/")) File(tmp, p).readBytes() else File("src/main/assets/ph", p).readBytes() }
+        val lib = Library(srcOf, tmp)
+        val m = HumanModel(lib).apply { state.macro["gender"] = 0f; state.macro["age"] = 0.56f; state.clothes.add("clothes_female_casualsuit01"); rebuild() }
+        var raw = MeshIO.load(src); if (raw.tris.size / 3 > 1_500_000) raw = MeshIO.simplify(raw, 1_000_000)
+        HeadSwap.debug = { println(it) }
+        val t0 = System.currentTimeMillis()
+        val prep = HeadSwap.prepare(raw, 0, m)
+        val p = HeadSwap.Params().apply { wrap = true; bodyToHead = File("/tmp/wrap_b2h").exists() }
+        val d = HeadSwap.build(m, prep, p, "w1", "Wrapped", tmp, dec, writer) { println(it) }
+        println("wrap built: moved ${d.dispIdx.size}, ${System.currentTimeMillis() - t0} ms")
+        HumanModel.headLoader = { id -> HeadStore.load(tmp, id) }
+        try {
+            m.state.customHead = "w1"; m.forgetHead(); m.rebuild()
+            val parts = PartBuilder.build(m, false).map { it.name }; println("parts: $parts")
+            assertTrue("head" !in parts); assertTrue("eyes_high-poly" in parts)
+            val out = File("/tmp/wrap").apply { mkdirs() }
+            for ((nm, ex) in listOf("neutral" to emptyMap(), "smile" to mapOf("mh:mouth-corner-puller" to 0.9f, "mh:eye-left-slit" to 0.3f, "mh:eye-right-slit" to 0.3f),
+                                     "blink" to mapOf("mh:eye-left-closure" to 1f, "mh:eye-right-closure" to 1f),
+                                     "open" to mapOf("mh:mouth-open" to 0.7f, "mh:eyebrows-left-up" to 1f, "mh:eyebrows-right-up" to 1f))) {
+                m.state.expression.clear(); m.state.expression.putAll(ex); m.rebuild()
+                File(out, "$nm.glb").outputStream().use { GlbExporter.write(m, it, only = PartBuilder.build(m, true, withExpression = true), anims = emptyList(), faceShapes = false) }
+            }
+        } finally { HumanModel.headLoader = null }
+    }
+
     @Test fun replacesHead() {
         val src = File(System.getProperty("headsrc") ?: "/tmp/headsrc.glb"); if (!src.exists()) return
         val tmp = java.nio.file.Files.createTempDirectory("phh").toFile()

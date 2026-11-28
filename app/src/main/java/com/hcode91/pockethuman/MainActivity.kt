@@ -22,6 +22,7 @@ class MainActivity : Activity() {
     private lateinit var lib: Library
     private lateinit var model: HumanModel
     private lateinit var view3d: HumanView
+    private lateinit var overlay: StencilOverlay
     private lateinit var content: LinearLayout
     private lateinit var info: TextView
     private lateinit var tabBar: LinearLayout
@@ -51,7 +52,8 @@ class MainActivity : Activity() {
             val parts = PartBuilder.build(model, false)
             runOnUiThread {
                 view3d = HumanView(this, lib)
-                root.addView(view3d, LinearLayout.LayoutParams(-1, 0, 0.52f))
+                overlay = StencilOverlay(this).apply { visibility = View.GONE }
+                root.addView(android.widget.FrameLayout(this).apply { addView(view3d, android.widget.FrameLayout.LayoutParams(-1, -1)); addView(this@MainActivity.overlay, android.widget.FrameLayout.LayoutParams(-1, -1)) }, LinearLayout.LayoutParams(-1, 0, 0.52f))
                 info = TextView(this).apply { setTextColor(dim); textSize = 12f; setPadding(dp(12), dp(4), dp(12), 0) }
                 root.addView(info)
                 tabBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(dp(6), dp(4), dp(6), dp(4)) }
@@ -101,7 +103,7 @@ class MainActivity : Activity() {
             dirty.set(false)
             model.rebuild()
             val parts = PartBuilder.build(model, false)
-            runOnUiThread { if (draft == null && headPrep == null && tab != "Scene") view3d.show(parts); updateInfo() }
+            runOnUiThread { if (draft == null && headPrep == null && painter == null && tab != "Scene") view3d.show(parts); updateInfo() }
         }
     }
     private fun updateInfo() {
@@ -279,6 +281,7 @@ class MainActivity : Activity() {
                 }
             }
             "Skin" -> {
+                if (s.customModel == null) paintButtons(s)
                 switch("Match skin to ethnicity, gender and age", s.autoSkin) { s.autoSkin = it }
                 lib.skins.forEachIndexed { i, sk -> if (!sk.adult || s.adult) option(sk.name, s.skin == i) { s.skin = i; s.autoSkin = false } }
             }
@@ -1140,10 +1143,12 @@ class MainActivity : Activity() {
         header("Head")
         s.customHead?.let { id ->
             content.addView(TextView(this).apply { setTextColor(dim); textSize = 13f; setPadding(0, 0, 0, dp(6))
-                text = "Using a head from a 3D model: ${model.customHead?.name ?: id}. It moves with the skeleton and these expressions, in the app and in exports." })
+                text = if (model.customHead?.wrap == true) "Using the face of ${model.customHead?.name ?: id}: the PocketHuman head is shaped and painted to match, so every expression below works on it. (Changing the skin later takes the painted face off; make the head again.)"
+                    else "Using a head from a 3D model: ${model.customHead?.name ?: id}. It moves with the skeleton and these expressions, in the app and in exports." })
             button("Back to the PocketHuman head") { s.customHead = null; changed(); saveLast(); showTab("Face") }
         }
-        button("Replace the head with one from a 3D model (.glb / .obj)") {
+        paintButtons(s)
+        button("Use the face of a 3D model (.glb / .obj)") {
             startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "*/*" }, REQ_HEAD)
         }
         for ((hid, hname) in HeadStore.list(filesDir)) {
@@ -1158,6 +1163,151 @@ class MainActivity : Activity() {
         }
     }
 
+    // ------------------------------------------------------------------ stencil painting
+    private var painter: SkinPainter? = null; private var paintBase: String? = null; private var liveKey = ""
+    private var paintMode = 0          // 0 turn view, 1 move picture, 2 paint, 3 erase
+    private var paintSize = 90f; private var paintStrength = 0.6f; private var paintSoft = 0.5f
+    private var stencilPx: SkinPainter.Stencil? = null
+
+    private fun paintButtons(s: HumanState) {
+        button("Paint on the skin from a picture (stencil)…") { startPainter() }
+        if (s.paintSkin != null) button("Remove the painting") {
+            AlertDialog.Builder(this).setMessage("Remove everything painted on the skin?").setPositiveButton("Remove") { _, _ ->
+                s.paintSkin?.let { java.io.File(filesDir, it).parentFile?.deleteRecursively() }
+                s.paintSkin = null; s.paintFrom = null; changed(); saveLast(); showTab(tab) }.setNegativeButton("Cancel", null).show() }
+    }
+
+    private fun startPainter() {
+        val wait = AlertDialog.Builder(this).setMessage("Getting the skin ready…").setCancelable(false).show()
+        worker.execute {
+            val r = runCatching {
+                model.rebuild()
+                val parts = PartBuilder.build(model, false)
+                val body = parts.first { it.name == "body" }
+                val tex = body.texture
+                val img = AndroidImageDecoder.decode(lib.am.bytes(tex)) ?: error("Couldn't read the skin")
+                // painting starts from the current painting if there is one, but erasing goes back to the skin under it
+                val baseTex = if (model.state.paintSkin != null && tex == model.state.paintSkin) model.state.paintFrom!! else tex
+                val base = if (baseTex == tex) img.third else (AndroidImageDecoder.decode(lib.am.bytes(baseTex))?.takeIf { it.first == img.first && it.second == img.second }?.third ?: img.third)
+                val p = SkinPainter(img.first, img.second, base, body.pos, body.uv, body.tris)
+                System.arraycopy(img.third, 0, p.px, 0, p.px.size)
+                Triple(p, baseTex, parts)
+            }
+            runOnUiThread {
+                wait.dismiss()
+                r.onSuccess { (p, baseTex, parts) ->
+                    painter = p; paintBase = baseTex; liveKey = "live:paint" + System.currentTimeMillis().toString(36)
+                    view3d.liveSource = { k -> if (k == liveKey) painter?.let { pp -> android.graphics.Bitmap.createBitmap(pp.px, pp.w, pp.h, android.graphics.Bitmap.Config.ARGB_8888) } else null }
+                    view3d.show(parts.map { if (it.name == "body") Part(it.name, it.pos, it.nrm, it.uv, it.tris, liveKey, it.alpha, it.normalTex, it.joints, it.weights, it.baseRefs, it.baseRefW, it.refsPer) else it })
+                    overlay.visibility = View.VISIBLE
+                    tabBar.visibility = View.GONE; paintMode = 0; applyPaintMode(); painterPanel()
+                    if (overlay.picture == null) toast("Choose a picture to paint with")
+                }.onFailure { AlertDialog.Builder(this).setTitle("Couldn't start painting").setMessage(it.message ?: it.toString()).setPositiveButton("OK", null).show() }
+            }
+        }
+    }
+
+    private fun loadStencil(uri: android.net.Uri) {
+        runCatching {
+            val o = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            contentResolver.openInputStream(uri)!!.use { android.graphics.BitmapFactory.decodeStream(it, null, o) }
+            var ss = 1; while (o.outWidth / (ss * 2) >= 1600 || o.outHeight / (ss * 2) >= 1600) ss *= 2
+            val b = contentResolver.openInputStream(uri)!!.use { android.graphics.BitmapFactory.decodeStream(it, null, android.graphics.BitmapFactory.Options().apply { inSampleSize = ss }) }!!
+            val px = IntArray(b.width * b.height); b.getPixels(px, 0, b.width, 0, 0, b.width, b.height)
+            overlay.picture = b; stencilPx = SkinPainter.Stencil(b.width, b.height, px, FloatArray(6))
+            paintMode = 1; applyPaintMode(); painterPanel()
+            toast("Move the picture over the face: one finger to move, two to size and turn")
+        }.onFailure { toast("Couldn't open that picture") }
+    }
+
+    private fun applyPaintMode() {
+        overlay.moving = paintMode == 1
+        view3d.brush = if (paintMode >= 2) paintBrush else null
+        overlay.cursorR = 0f; overlay.invalidate()
+    }
+
+    private fun painterPanel() {
+        content.removeAllViews()
+        content.addView(TextView(this).apply { text = "Paint on the skin"; setTextColor(accent); textSize = 17f; typeface = Typeface.DEFAULT_BOLD; setPadding(0, dp(8), 0, dp(4)) })
+        content.addView(TextView(this).apply { setTextColor(dim); textSize = 12f
+            text = "Like Blender's stencil: lay a picture over the view (a face photo, a render of a Meshy head, a tattoo), line it up, then paint and the picture goes onto the skin under the brush. Two fingers turn and zoom the view while painting; double-tap zooms to the face in Turn view." })
+        button(if (overlay.picture == null) "Choose a picture…" else "Choose another picture…") {
+            startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "image/*" }, REQ_STENCIL) }
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        listOf("Turn view", "Move picture", "Paint", "Erase").forEachIndexed { i, l -> row.addView(chip(l, paintMode == i) {
+            if (i in 1..2 && overlay.picture == null) { toast("Choose a picture first"); return@chip }
+            paintMode = i; applyPaintMode(); painterPanel() }) }
+        content.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(row) })
+        if (overlay.picture != null) {
+            val r2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            r2.addView(chip("Flip picture", false) { overlay.flip() })
+            r2.addView(chip("Reset picture", false) { overlay.fit() })
+            content.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(r2) })
+            slider("Picture see-through", overlay.opacity, 0.1f, 1f, ::pct) { overlay.opacity = it }
+        }
+        slider("Brush size", paintSize, 20f, 320f, { "${it.toInt()} px" }) { paintSize = it }
+        slider("Strength", paintStrength, 0.05f, 1f, ::pct) { paintStrength = it }
+        slider("Soft edge", paintSoft, 0f, 1f, ::pct) { paintSoft = it }
+        button("Undo stroke") { val p = painter ?: return@button; val d = p.undo(); if (d == null) toast("Nothing to undo") else pushPatch(d) }
+        button("Save the painting") { savePainting() }
+        button("Cancel") { closePainter() }
+    }
+
+    private fun pushPatch(d: IntArray) {
+        val p = painter ?: return
+        val x0 = d[0]; val y0 = d[1]; val w = d[2] - x0 + 1; val h = d[3] - y0 + 1
+        if (w <= 0 || h <= 0) return
+        view3d.patchTexture(liveKey, x0, y0, android.graphics.Bitmap.createBitmap(p.px, y0 * p.w + x0, p.w, w, h, android.graphics.Bitmap.Config.ARGB_8888))
+    }
+
+    private val paintBrush = object : HumanView.Brush {
+        var lx = 0f; var ly = 0f
+        private fun at(x: Float, y: Float) {
+            val p = painter ?: return
+            val o = view3d.unproject(x, y, -1f); val far = view3d.unproject(x, y, 1f)
+            val hit = p.pick(o, floatArrayOf(far[0] - o[0], far[1] - o[1], far[2] - o[2])) ?: return
+            val depth = view3d.ndcDepth(hit)
+            val a = view3d.unproject(x, y, depth); val b = view3d.unproject(x + paintSize, y, depth)
+            val wr = Math.sqrt(((b[0] - a[0]) * (b[0] - a[0]) + (b[1] - a[1]) * (b[1] - a[1]) + (b[2] - a[2]) * (b[2] - a[2])).toDouble()).toFloat()
+            val st = stencilPx?.let { s -> overlay.inverse()?.let { SkinPainter.Stencil(s.pw, s.ph, s.pixels, it) } }
+            val d = p.dab(hit, wr, x, y, paintSize, view3d.viewProj(), view3d.width, view3d.height, view3d.eye(), st, paintMode == 3, paintStrength, paintSoft)
+            if (d != null) pushPatch(d)
+        }
+        override fun down(x: Float, y: Float): Boolean {
+            if (painter == null || paintMode < 2) return false
+            painter!!.strokeBegin(); lx = x; ly = y; at(x, y)
+            overlay.cursorX = x; overlay.cursorY = y; overlay.cursorR = paintSize; overlay.invalidate(); return true
+        }
+        override fun move(x: Float, y: Float) {
+            val step = paintSize / 4
+            var dist = Math.hypot((x - lx).toDouble(), (y - ly).toDouble()).toFloat()
+            while (dist >= step) { val t = step / dist; lx += (x - lx) * t; ly += (y - ly) * t; at(lx, ly); dist = Math.hypot((x - lx).toDouble(), (y - ly).toDouble()).toFloat() }
+            overlay.cursorX = x; overlay.cursorY = y; overlay.cursorR = paintSize; overlay.invalidate()
+        }
+        override fun up() { painter?.strokeEnd(); overlay.cursorR = 0f; overlay.invalidate() }
+    }
+
+    private fun savePainting() {
+        val p = painter ?: return; val base = paintBase ?: return
+        val wait = AlertDialog.Builder(this).setMessage("Saving…").setCancelable(false).show()
+        worker.execute {
+            val r = runCatching {
+                val id = "p" + System.currentTimeMillis().toString(36)
+                val dir = java.io.File(filesDir, "imported/painted/$id")
+                val name = AndroidImageWriter.write(p.px, p.w, p.h, dir, "skin")
+                model.state.paintSkin?.let { old -> java.io.File(filesDir, old).parentFile?.takeIf { it.name != id }?.deleteRecursively() }
+                model.state.paintSkin = "imported/painted/$id/$name"; model.state.paintFrom = base
+            }
+            runOnUiThread { wait.dismiss(); r.onSuccess { saveLast(); closePainter(); toast("Painting saved on the skin") }.onFailure { toast("Couldn't save: ${it.message}") } }
+        }
+    }
+
+    private fun closePainter() {
+        painter = null; view3d.brush = null; view3d.liveSource = null
+        overlay.visibility = View.GONE; overlay.moving = false; overlay.cursorR = 0f
+        tabBar.visibility = View.VISIBLE; showTab(tab); changed()
+    }
+
     private fun startHeadImport(f: java.io.File) {
         val wait = AlertDialog.Builder(this).setMessage("Loading model…").setCancelable(false).show()
         if (model.state.customModel != null) { model.state.customModel = null }
@@ -1167,7 +1317,7 @@ class MainActivity : Activity() {
             val r = runCatching {
                 // keep the full detail for the head (it's cut out first, then thinned only if still huge)
                 var m = MeshIO.load(f); if (m.tris.size / 3 > 1_500_000) m = MeshIO.simplify(m, 1_000_000)
-                headRaw = m; headParams = HeadSwap.Params()
+                headRaw = m; headParams = HeadSwap.Params().apply { wrap = true }
                 headName = f.nameWithoutExtension.replace("Meshy_AI_", "").replace(Regex("_\\d{8}.*$"), "").replace('_', ' ').take(40).ifBlank { "Head" }
                 headPrep = HeadSwap.prepare(m, 0, model)
                 val dir = java.io.File(filesDir, "imported/my_heads/preview").apply { deleteRecursively(); mkdirs() }
@@ -1202,7 +1352,14 @@ class MainActivity : Activity() {
         val p = headParams
         content.addView(TextView(this).apply { text = "Line up the new head"; setTextColor(accent); textSize = 17f; typeface = Typeface.DEFAULT_BOLD; setPadding(0, dp(8), 0, dp(4)) })
         content.addView(TextView(this).apply { setTextColor(dim); textSize = 12f
-            text = "The head has been cut off at the neck and placed on the body. Adjust it until the neck lines up, then tap Make the head. Its skin is matched to the body and the neck seam is blended in." })
+            text = "The head has been cut off at the neck and placed on the body. Line it up (eyes, mouth and chin over the PocketHuman face matter most), then tap Make the head." })
+        val wrow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        wrow.addView(chip("Shape + paint the app head", p.wrap) { p.wrap = true; headEditor() })
+        wrow.addView(chip("Replace the head", !p.wrap) { p.wrap = false; headEditor() })
+        content.addView(HorizontalScrollView(this).apply { addView(wrow) })
+        content.addView(TextView(this).apply { setTextColor(dim); textSize = 12f; setPadding(0, dp(2), 0, dp(4))
+            text = if (p.wrap) "The PocketHuman head takes this head's shape and its face is painted on, so it stays the app's own head: every expression, blink, the app's eyes, teeth and hair all work. Its hair isn't used (pick one in Hair)."
+                else "This head's mesh replaces the PocketHuman head, hair and all. It follows the expressions through the face underneath." })
         content.addView(EditText(this).apply { setText(headName); setTextColor(fg); inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_WORDS
             addTextChangedListener(object : android.text.TextWatcher {
                 override fun afterTextChanged(e: android.text.Editable?) { headName = e.toString().ifBlank { "Head" } }
@@ -1212,7 +1369,7 @@ class MainActivity : Activity() {
             p.turn = (p.turn + 1) % 4; val raw = headRaw ?: return@chip
             worker.execute { val pr = runCatching { HeadSwap.prepare(raw, p.turn, model) }.getOrNull(); runOnUiThread { if (pr != null) { headPrep = pr; refreshHead() } else toast("Couldn't find a head facing that way") } }
         })
-        row.addView(chip("Reset", false) { val t = p.turn; headParams = HeadSwap.Params().apply { turn = t }; headEditor(); refreshHead() })
+        row.addView(chip("Reset", false) { val t = p.turn; val wr = p.wrap; headParams = HeadSwap.Params().apply { turn = t; wrap = wr }; headEditor(); refreshHead() })
         content.addView(HorizontalScrollView(this).apply { addView(row) })
         slider("Size", p.size, 0.6f, 1.6f, ::pct) { p.size = it; refreshHead() }
         slider("Up / down", p.up, -1.5f, 1.5f, { "%.1f cm".format(it * 10) }) { p.up = it; refreshHead() }
@@ -1227,6 +1384,18 @@ class MainActivity : Activity() {
         content.addView(TextView(this).apply { setTextColor(dim); textSize = 12f
             text = if (p.bodyToHead) "The body is tinted to the head's skin tone (if you change the skin later, the body goes back to that skin)." else "The head's skin is tinted to the body's tone." })
         slider("How closely to match", p.skinMatch, 0f, 1f, ::pct) { p.skinMatch = it }
+        if (p.wrap) {
+            header("Eyes and brows")
+            content.addView(TextView(this).apply { setTextColor(dim); textSize = 12f; text = "The app's eyes go in where the painted ones were. If they end up off, nudge them here and make the head again." })
+            slider("Eyes up / down", p.eyeUp, -0.6f, 0.6f, { "%.1f cm".format(it * 10) }) { p.eyeUp = it }
+            slider("Eyes apart", p.eyeApart, -0.4f, 0.4f, { "%.1f cm".format(it * 10) }) { p.eyeApart = it }
+            slider("Eyes in / out", p.eyeDepth, -0.4f, 0.4f, { "%.1f cm".format(it * 10) }) { p.eyeDepth = it }
+            content.addView(Switch(this).apply { text = "Keep the app's eyebrows (otherwise the painted ones show)"; setTextColor(fg); isChecked = p.keepBrows
+                setOnCheckedChangeListener { _, c -> p.keepBrows = c } })
+            button("Make the head") { makeHead() }
+            button("Cancel") { closeHeadEditor() }
+            return
+        }
         header("Eyes")
         content.addView(Switch(this).apply { text = "Put in the app's eyes and eyelids (they can blink and look around)"; setTextColor(fg); isChecked = p.appEyes
             setOnCheckedChangeListener { _, c -> p.appEyes = c; headEditor() } })
@@ -1257,7 +1426,7 @@ class MainActivity : Activity() {
                 r.onSuccess {
                     model.state.customHead = id; model.forgetHead()
                     java.io.File(filesDir, "imported/my_heads/preview").deleteRecursively()
-                    view3d.reload(lib); closeHeadEditor(); saveLast(); toast("$name is on. Try the expressions below.")
+                    model.rebuild(); view3d.reload(lib); closeHeadEditor(); saveLast(); toast("$name is on. Try the expressions below.")
                 }.onFailure { AlertDialog.Builder(this).setTitle("Couldn't make the head").setMessage(it.message ?: it.toString()).setPositiveButton("OK", null).show() }
             }
         }
@@ -1341,6 +1510,7 @@ class MainActivity : Activity() {
                 }
             }
             REQ_RENDER -> renderScene(uri)
+            REQ_STENCIL -> loadStencil(uri)
             REQ_HEAD -> {
                 val f = java.io.File(cacheDir, displayName(uri).replace(Regex("[^A-Za-z0-9._-]"), "_"))
                 contentResolver.openInputStream(uri)!!.use { i -> f.outputStream().use { i.copyTo(it) } }
@@ -1394,5 +1564,5 @@ class MainActivity : Activity() {
     override fun onPause() { super.onPause(); if (::view3d.isInitialized) view3d.onPause(); if (::model.isInitialized) saveLast() }
     override fun onResume() { super.onResume(); if (::view3d.isInitialized) view3d.onResume() }
 
-    companion object { const val REQ_GLB = 1; const val REQ_SAVE = 2; const val REQ_LOAD = 3; const val REQ_PACK = 4; const val REQ_OUTFIT = 5; const val REQ_OUTFIT_TEX = 6; const val REQ_ASIS = 7; const val REQ_RENDER = 8; const val REQ_SCENE_CHAR = 9; const val REQ_HEAD = 10 }
+    companion object { const val REQ_GLB = 1; const val REQ_SAVE = 2; const val REQ_LOAD = 3; const val REQ_PACK = 4; const val REQ_OUTFIT = 5; const val REQ_OUTFIT_TEX = 6; const val REQ_ASIS = 7; const val REQ_RENDER = 8; const val REQ_SCENE_CHAR = 9; const val REQ_HEAD = 10; const val REQ_STENCIL = 11 }
 }

@@ -32,6 +32,9 @@ class HumanState {
     var customModel: String? = null
     /** a head from a 3D model in place of the PocketHuman head (id in imported/my_heads), or null */
     var customHead: String? = null
+    /** skin painted with the stencil brush (a copy of [paintFrom], used only while that's still the body's skin) */
+    var paintSkin: String? = null
+    var paintFrom: String? = null
     /** animation clips to include in the export */
     val anims = ArrayList(DEFAULT_ANIMS)
     val clothes = LinkedHashSet<String>()
@@ -52,7 +55,7 @@ class HumanState {
         put("format", "pockethuman"); put("version", 1); put("name", name)
         put("macro", JSONObject(macro as Map<*, *>)); put("race", JSONObject(race as Map<*, *>)); put("details", JSONObject(details as Map<*, *>))
         put("skin", skin); put("eyeColour", eyeColour); put("eyebrows", eyebrows ?: ""); put("eyelashes", eyelashes ?: ""); put("hair", hair ?: "")
-        put("hairVariant", hairVariant); put("adult", adult); put("autoSkin", autoSkin); put("genitals", genitals); put("genitalDetail", genitalDetail); put("anatomyTint", anatomyTint); put("customModel", customModel ?: JSONObject.NULL); put("customHead", customHead ?: JSONObject.NULL); put("anims", org.json.JSONArray(anims))
+        put("hairVariant", hairVariant); put("adult", adult); put("autoSkin", autoSkin); put("genitals", genitals); put("genitalDetail", genitalDetail); put("anatomyTint", anatomyTint); put("customModel", customModel ?: JSONObject.NULL); put("customHead", customHead ?: JSONObject.NULL); put("paintSkin", paintSkin ?: JSONObject.NULL); put("paintFrom", paintFrom ?: JSONObject.NULL); put("anims", org.json.JSONArray(anims))
         put("clothes", org.json.JSONArray(clothes.toList()))
     }
     fun load(j: JSONObject) {
@@ -65,6 +68,8 @@ class HumanState {
         name = j.optString("name", "Character")
         adult = j.optBoolean("adult", false); autoSkin = j.optBoolean("autoSkin", true); genitals = j.optInt("genitals", 0); genitalDetail = j.optInt("genitalDetail", 0); anatomyTint = j.optBoolean("anatomyTint", true); customModel = if (j.isNull("customModel")) null else j.optString("customModel").ifEmpty { null }
         customHead = if (!j.has("customHead") || j.isNull("customHead")) null else j.optString("customHead").ifEmpty { null }
+        paintSkin = if (!j.has("paintSkin") || j.isNull("paintSkin")) null else j.optString("paintSkin").ifEmpty { null }
+        paintFrom = if (!j.has("paintFrom") || j.isNull("paintFrom")) null else j.optString("paintFrom").ifEmpty { null }
         anims.clear(); j.optJSONArray("anims")?.let { a -> for (i in 0 until a.length()) anims.add(a.getString(i)) } ?: anims.addAll(DEFAULT_ANIMS)
         clothes.clear(); j.optJSONArray("clothes")?.let { a -> for (i in 0 until a.length()) clothes.add(a.getString(i)) }
         expression.clear()
@@ -167,6 +172,8 @@ class HumanModel(val lib: Library) {
                 if (x > 0) s.pos.forEach { apply(it, x) } else if (x < 0) s.neg.forEach { apply(it, -x) }
             }
         }
+        // a "wrap" head: the app's own head shaped like the imported one
+        customHead?.takeIf { it.wrap }?.let { h -> for (k in h.dispIdx.indices) { val o = h.dispIdx[k] * 3; if (o + 2 < v.size) for (c in 0..2) v[o + c] += h.disp[k * 3 + c] } }
         neutral = v.copyOf()
         for ((key, w) in state.expression) if (w > 0.001f) for ((t, tw) in lib.faceShapeTargets(key, state.race)) apply(t, w * tw)
         verts = v

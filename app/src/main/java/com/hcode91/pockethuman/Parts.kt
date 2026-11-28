@@ -22,7 +22,7 @@ object PartBuilder {
         val head = model.customHead
         val v0 = if (forExport && !withExpression) model.neutral else model.verts
         // with a replacement head, the app's eyelids (kept for blinking) and eyes move into the new head's sockets
-        val v = if (head != null && head.appEyes && head.lids.isNotEmpty()) v0.copyOf().also { e ->
+        val v = if (head != null && !head.wrap && head.appEyes && head.lids.isNotEmpty()) v0.copyOf().also { e ->
             val di = HashMap<Int, Int>(head.dispIdx.size * 2); for (k in head.dispIdx.indices) di[head.dispIdx[k]] = k
             for (i in head.lids) di[i]?.let { k -> for (c in 0..2) e[i * 3 + c] += head.disp[k * 3 + c] } } else v0
         val out = ArrayList<Part>()
@@ -33,7 +33,7 @@ object PartBuilder {
         val w = if (forExport) FloatArray(n * 4) { rig.weights[bm.renderMap[it / 4] * 4 + it % 4] } else FloatArray(0)
         val skin = lib.skins[model.state.skin.coerceIn(0, lib.skins.size - 1)]
         // a replacement head hides the PocketHuman head and its pieces (keeping the app's eyes if asked)
-        val headSkip = if (head == null) emptySet() else setOfNotNull(model.state.eyebrows, model.state.hair, "teeth_teeth_base", "tongue_tongue01") +
+        val headSkip = if (head == null) emptySet() else if (head.wrap) (if (head.keepBrows) emptySet() else setOfNotNull(model.state.eyebrows)) else setOfNotNull(model.state.eyebrows, model.state.hair, "teeth_teeth_base", "tongue_tongue01") +
             (if (head.appEyes) emptySet() else setOfNotNull("eyes_high-poly", model.state.eyelashes))
         val ids = model.proxyIds().filter { it.first !in skip && it.first !in headSkip }
         // body vertices covered by the chosen clothes
@@ -56,7 +56,9 @@ object PartBuilder {
         val nrm = weldedNormals(pos, bm.tris, n)
         val refs = bm.renderMap; val rw1 = FloatArray(n) { 1f }
         // a replacement head made with "body to head" brings a tinted copy of this skin
-        val bodyTex = model.bodyTexture(skin).let { t -> if (head?.bodyTexture != null && head.bodySource == t) head.bodyTexture else t }
+        val bodyTex0 = model.bodyTexture(skin).let { t -> if (head?.bodyTexture != null && head.bodySource == t) head.bodyTexture else t }
+        // stencil painting on top of that, while it's still the skin it was painted on
+        val bodyTex = model.state.let { st -> if (st.paintSkin != null && st.paintFrom == bodyTex0) st.paintSkin!! else bodyTex0 }
         out.add(Part("body", pos, nrm, bm.uv, vis.toIntArray(), bodyTex, false, skin.normal, j, w, refs, rw1, 1))
         if (lidTris.isNotEmpty()) out.add(Part("eyelids", pos, nrm, bm.uv, lidTris.toIntArray(), head!!.lidTexture!!, false, null, j, w, refs, rw1, 1))
         if (forExport && under.isNotEmpty())
@@ -77,9 +79,9 @@ object PartBuilder {
             val gw = if (forExport) FloatArray(gn * 4) { rig.weights[gm[it / 4] * 4 + it % 4] } else FloatArray(0)
             out.add(Part("genitals", gp, weldedNormals(gp, gt, gn), guv, gt, skin.texture, false, skin.normal, gj, gw, gm, FloatArray(gn) { 1f }, 1))
         }
-        if (head != null) out.add(HeadSwap.part(model, head, v0, forExport))
+        if (head != null && !head.wrap) out.add(HeadSwap.part(model, head, v0, forExport))
         // the app's eyes, moved into the new head's sockets
-        val eyeV = if (head != null && head.appEyes) v0.copyOf().also { e -> for (i in head.dispIdx.indices) for (k in 0..2) e[head.dispIdx[i] * 3 + k] += head.disp[i * 3 + k] } else v
+        val eyeV = if (head != null && head.appEyes && !head.wrap) v0.copyOf().also { e -> for (i in head.dispIdx.indices) for (k in 0..2) e[head.dispIdx[i] * 3 + k] += head.disp[i * 3 + k] } else v
         for ((id, variant) in ids) {
             val pm = lib.proxy(id)
             val vars = pm.info.variants; if (vars.isEmpty()) continue

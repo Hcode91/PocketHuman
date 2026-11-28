@@ -67,6 +67,10 @@ class HumanView(ctx: Context, private var lib: Library) : GLSurfaceView(ctx) {
     }
     fun ndcDepth(w: FloatArray): Float { val o = FloatArray(4); Matrix.multiplyMV(o, 0, viewProj(), 0, floatArrayOf(w[0], w[1], w[2], 1f), 0); return o[2] / o[3] }
     fun show(parts: List<Part>) { queueEvent { r.pending = parts }; requestRender() }
+    /** Textures named "live:…" come from here (painting), not from files. */
+    @Volatile var liveSource: ((String) -> android.graphics.Bitmap?)? = null
+    /** Replaces part of a live texture (the bitmap is recycled afterwards). */
+    fun patchTexture(key: String, x: Int, y: Int, bmp: android.graphics.Bitmap) { queueEvent { r.patch(key, x, y, bmp) }; requestRender() }
     /** bone matrices (52 x column-major 4x4) for skinning parts that carry joints; null = draw parts as they are */
     @Volatile private var bones: FloatArray? = null
     fun setBones(m: FloatArray?) { bones = m; requestRender() }
@@ -184,8 +188,15 @@ class HumanView(ctx: Context, private var lib: Library) : GLSurfaceView(ctx) {
             glBindVertexArray(0); glEnable(GL_DEPTH_TEST)
         }
 
+        fun patch(key: String, x: Int, y: Int, bmp: android.graphics.Bitmap) {
+            val id = tex[key]
+            if (id != null) { glBindTexture(GL_TEXTURE_2D, id); GLUtils.texSubImage2D(GL_TEXTURE_2D, 0, x, y, bmp); glGenerateMipmap(GL_TEXTURE_2D) }
+            bmp.recycle()
+        }
+
         private fun texture(path: String): Int = tex.getOrPut(path) {
-            val raw = lib.am.bytes(path); val bmp = BitmapFactory.decodeByteArray(raw, 0, raw.size)
+            val bmp = if (path.startsWith("live:")) (liveSource?.invoke(path) ?: android.graphics.Bitmap.createBitmap(4, 4, android.graphics.Bitmap.Config.ARGB_8888))
+                else { val raw = lib.am.bytes(path); BitmapFactory.decodeByteArray(raw, 0, raw.size) }
             val id = IntArray(1); glGenTextures(1, id, 0); glBindTexture(GL_TEXTURE_2D, id[0])
             GLUtils.texImage2D(GL_TEXTURE_2D, 0, bmp, 0); bmp.recycle()
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
