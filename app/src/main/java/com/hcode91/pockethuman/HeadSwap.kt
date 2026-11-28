@@ -325,6 +325,26 @@ object HeadSwap {
         val eyeProxy = lib.proxy("eyes_high-poly"); val eyesAt = eyeProxy.fit(V)
         val eyeSpheres = spheres(eyesAt, eyeProxy.n, ref.ax)
         val img = prep.texture?.let { runCatching { decoder.decode(it) }.getOrNull() }
+        if (p.wrap) {
+            // wrap: the app's own face sliders are fitted to the new head (always a believable face), then the face is painted on
+            val pinnedW = BooleanArray(nV) { inH[it] && V[it * 3 + 1] < ref.cutY - 0.2f }
+            val chinM = ref.cutY + p.up + prep.chin * p.size
+            // first the whole head to the new head's size and place (per-axis scale + shift, fitted to its skin, faded
+            // into the neck), then the face sliders for its shape
+            val pre = fitHeadBox(V, hv, mq, mn, prep, ref, img, eyeSpheres, nV)
+            val Vb = FloatArray(V.size) { V[it] + pre[it] }
+            val wd = fitSliders(model, Vb, hv, bt, vn, mq, mn, prep, ref, img, mp, eyeSpheres.map { e -> floatArrayOf(e[0], e[1], e[2], e[3]) }, chinM, p)
+            for (i in wd.indices) wd[i] += pre[i]
+            for (i in 0 until nV) if (pinnedW[i]) for (k in 0..2) wd[i * 3 + k] = 0f
+            // eye centres after the fit: their helper geometry moved with the sliders
+            val shifts = ArrayList<FloatArray>()
+            for (e in eyeSpheres) { val a = FloatArray(3); var c = 0
+                for (j in 13380 until nV) { val dx = V[j * 3] - e[0]; val dy = V[j * 3 + 1] - e[1]; val dz = V[j * 3 + 2] - e[2]
+                    if (dx * dx + dy * dy + dz * dz < (1.4f * e[3]) * (1.4f * e[3])) { for (k in 0..2) a[k] += wd[j * 3 + k]; c++ } }
+                if (c > 0) for (k in 0..2) a[k] /= c; shifts.add(a) }
+            val eyeYw = if (eyeSpheres.isEmpty()) ref.nose + 0.4f else eyeSpheres.mapIndexed { k, e -> e[1] + shifts[k][1] }.average().toFloat()
+            return buildWrap(model, prep, p, id, name, filesDir, decoder, writer, progress, ref, V, hv, inH, wd, ArrayList((13380 until nV).toList()), eyeSpheres, shifts, mq, img, eyeYw, fromSliders = true)
+        }
         run {
             val chinM = ref.cutY + p.up + prep.chin * p.size
             // trust the painted-eye guess only when both eyes agree (level and either side of the middle)
@@ -339,9 +359,12 @@ object HeadSwap {
             val sx = ((if (spacingOk && found != null && eyeSpheres.size == 2) (Math.abs(found[0] - found[3]) / sepA).coerceIn(0.85f, 1.25f) else 1f) + p.eyeApart / sepA).coerceIn(0.5f, 2f)
             val dz = (if (found != null && eyeSpheres.size == 2) ((found[2] + found[5]) / 2 - (eyeSpheres.map { it[2] + it[3] }.average().toFloat())) else 0f) + p.eyeDepth
             debug?.invoke("eyes found ${found?.joinToString { "%.2f".format(it) }} app eye $eA chin $cA -> model eye $eM chin $chinM k $k sx $sx dz $dz")
+            // wrap: also line up the nose tip and the mouth, so each feature of the app face sits on the same feature
+            // of the new face (otherwise the app's lip gets pulled onto the new nose, and so on)
+            val knots = if (p.wrap) wrapLandmarks(V, hv, bt, mp, prep, img, ref, cA, chinM, eA, eM) else null
             for (i in hv) {
                 val y = V[i * 3 + 1]; if (y <= ref.cutY) continue
-                val ny = if (y < cA) ref.cutY + (y - ref.cutY) * (chinM - ref.cutY) / (cA - ref.cutY) else chinM + (y - cA) * k
+                val ny = if (knots != null) piecewise(knots, y) else if (y < cA) ref.cutY + (y - ref.cutY) * (chinM - ref.cutY) / (cA - ref.cutY) else chinM + (y - cA) * k
                 val f = smooth(ref.cutY, cA, y)
                 disp[i * 3 + 1] = ny - y
                 disp[i * 3] = (V[i * 3] - ref.ax) * (sx - 1) * f
@@ -362,7 +385,8 @@ object HeadSwap {
             return !OutfitDraft.isSkinColour(c, 0.55f)
         }
         val tmp = FloatArray(nV * 3)
-        for (it in 0 until 16) {
+        if (p.wrap) wrapShape(V, disp, hv, nb, pinned, bt, vn, mq, mn, prep, ref, ::isHair)
+        else for (it in 0 until 16) {
             for (i in hv) {
                 if (pinned[i]) continue
                 val px = V[i * 3] + disp[i * 3]; val py = V[i * 3 + 1] + disp[i * 3 + 1]; val pz = V[i * 3 + 2] + disp[i * 3 + 2]
@@ -593,16 +617,311 @@ object HeadSwap {
     }
 
     /**
+     * Wrap mode's fitting: each point of the app head moves only straight in or out (along its normal) towards the new
+     * head, never sideways, and those in/out amounts are smoothed over neighbouring points. Pulling points to the
+     * nearest spot instead makes them slide and bunch up on bumps (nose, lips), which looks lumpy and melted.
+     */
+    private fun wrapShape(V: FloatArray, disp: FloatArray, hv: IntArray, nb: Array<HashSet<Int>>, pinned: BooleanArray, bt: IntArray, vn: FloatArray,
+                          mq: MeshQuery, mn: FloatArray, prep: Prepared, ref: AppRef, isHair: (MeshQuery.Hit, Float) -> Boolean) {
+        val nV = V.size / 3
+        val cur = FloatArray(nV * 3)
+        for (round in 0 until 3) {
+            for (i in 0 until nV) for (k in 0..2) cur[i * 3 + k] = V[i * 3 + k] + disp[i * 3 + k]
+            val cn = weldedNormals(cur, bt, nV)
+            run { var sg = 0.0; for (i in hv) sg += cn[i * 3] * vn[i * 3] + cn[i * 3 + 1] * vn[i * 3 + 1] + cn[i * 3 + 2] * vn[i * 3 + 2]; if (sg < 0) for (i in cn.indices) cn[i] = -cn[i] }
+            // control points: one head point per 0.22 dm cell, with how far the new surface is along its normal
+            // denser over the front of the face (nose, lips, eyes need it), sparser over the rest of the head
+            val pick = HashMap<Long, Int>()
+            for (i in hv) { val face = Math.abs(cur[i * 3] - ref.ax) < 0.75f && cur[i * 3 + 1] > ref.chin - 0.2f && cur[i * 3 + 1] < ref.nose + 1.2f && cn[i * 3 + 2] > 0.35f
+                val cell = if (face) 0.11f else 0.25f; val tag = if (face) 1L else 2L
+                val key = ((Math.floor(cur[i * 3] / cell.toDouble()).toLong() * 73856093L) xor (Math.floor(cur[i * 3 + 1] / cell.toDouble()).toLong() * 19349663L) xor (Math.floor(cur[i * 3 + 2] / cell.toDouble()).toLong() * 83492791L)) * 3 + tag
+                if (!pick.containsKey(key)) pick[key] = i }
+            val cx = ArrayList<Float>(); val cy = ArrayList<Float>(); val cz = ArrayList<Float>(); val dx = ArrayList<Float>(); val dy = ArrayList<Float>(); val dz = ArrayList<Float>()
+            var matched = 0
+            for (i in pick.values) {
+                val x = cur[i * 3]; val y = cur[i * 3 + 1]; val z = cur[i * 3 + 2]
+                if (pinned[i] || y < ref.cutY - 0.1f) { cx.add(x); cy.add(y); cz.add(z); dx.add(0f); dy.add(0f); dz.add(0f); continue }   // the neck stays
+                val h = mq.nearest(x, y, z, 0.6f) ?: continue
+                if (isHair(h, V[i * 3 + 1])) continue
+                val ta = prep.tris[h.tri * 3]; val tb = prep.tris[h.tri * 3 + 1]; val tc = prep.tris[h.tri * 3 + 2]
+                val hx = h.w0 * mn[ta * 3] + h.w1 * mn[tb * 3] + h.w2 * mn[tc * 3]; val hy = h.w0 * mn[ta * 3 + 1] + h.w1 * mn[tb * 3 + 1] + h.w2 * mn[tc * 3 + 1]; val hz = h.w0 * mn[ta * 3 + 2] + h.w1 * mn[tb * 3 + 2] + h.w2 * mn[tc * 3 + 2]
+                if (hx * cn[i * 3] + hy * cn[i * 3 + 1] + hz * cn[i * 3 + 2] < 0.3f) continue
+                val f = (h.x - x) * cn[i * 3] + (h.y - y) * cn[i * 3 + 1] + (h.z - z) * cn[i * 3 + 2]
+                if (Math.abs(f) > 0.5f) continue
+                cx.add(x); cy.add(y); cz.add(z); dx.add(f * cn[i * 3]); dy.add(f * cn[i * 3 + 1]); dz.add(f * cn[i * 3 + 2]); matched++
+            }
+            val n = cx.size; if (n < 10) return
+            // a smooth deformation through those points: 3D thin-plate spline (kernel r) + affine part, lightly regularised
+            val m = n + 4; val A = Array(m) { DoubleArray(m) }
+            for (i in 0 until n) { for (j in 0 until n) { val ex = cx[i] - cx[j]; val ey = cy[i] - cy[j]; val ez = cz[i] - cz[j]; A[i][j] = -Math.sqrt((ex * ex + ey * ey + ez * ez).toDouble()) }
+                A[i][i] += 0.025
+                A[i][n] = 1.0; A[i][n + 1] = cx[i].toDouble(); A[i][n + 2] = cy[i].toDouble(); A[i][n + 3] = cz[i].toDouble()
+                A[n][i] = 1.0; A[n + 1][i] = cx[i].toDouble(); A[n + 2][i] = cy[i].toDouble(); A[n + 3][i] = cz[i].toDouble() }
+            val sol = solve(A, arrayOf(DoubleArray(m) { if (it < n) dx[it].toDouble() else 0.0 }, DoubleArray(m) { if (it < n) dy[it].toDouble() else 0.0 }, DoubleArray(m) { if (it < n) dz[it].toDouble() else 0.0 })) ?: return
+            for (i in hv) { if (pinned[i]) continue
+                val x = cur[i * 3]; val y = cur[i * 3 + 1]; val z = cur[i * 3 + 2]
+                val r = smooth(ref.cutY - 0.2f, ref.cutY + 0.3f, V[i * 3 + 1])
+                for (q in 0..2) { val w = sol[q]; var v = w[n] + w[n + 1] * x + w[n + 2] * y + w[n + 3] * z
+                    for (j in 0 until n) { val ex = x - cx[j]; val ey = y - cy[j]; val ez = z - cz[j]; v -= w[j] * Math.sqrt((ex * ex + ey * ey + ez * ez).toDouble()) }
+                    disp[i * 3 + q] += (r * v).toFloat() } }
+            var mx = 0f; for (i in hv) mx = maxOf(mx, Math.abs(disp[i * 3]) + Math.abs(disp[i * 3 + 1]) + Math.abs(disp[i * 3 + 2]))
+            var md = 0f; for (j in 0 until n) md = maxOf(md, Math.abs(dx[j]) + Math.abs(dy[j]) + Math.abs(dz[j]))
+            var res = 0.0; for (j in 0 until n) { var v = sol[2][n] + sol[2][n + 1] * cx[j] + sol[2][n + 2] * cy[j] + sol[2][n + 3] * cz[j]
+                for (k in 0 until n) { val ex = cx[j] - cx[k]; val ey = cy[j] - cy[k]; val ez = cz[j] - cz[k]; v -= sol[2][k] * Math.sqrt((ex * ex + ey * ey + ez * ez).toDouble()) }
+                res = maxOf(res, Math.abs(v - dz[j])) }
+            debug?.invoke("wrap round $round: $n control points, $matched on the new face, max target $md, max disp $mx, fit residual $res, w max ${sol[2].take(n).maxOf { Math.abs(it) }}")
+        }
+    }
+
+    /**
+     * The whole app head to the new head's size and place: per-axis scale about the head's middle plus a shift, fitted
+     * (iteratively, closest points, skin only) to the new head, and faded out down to the neck cut. Returns offsets.
+     */
+    private fun fitHeadBox(V: FloatArray, hv: IntArray, mq: MeshQuery, mn: FloatArray, prep: Prepared, ref: AppRef,
+                           img: Triple<Int, Int, IntArray>?, eyeSpheres: List<FloatArray>, nV: Int): FloatArray {
+        val eA = if (eyeSpheres.isEmpty()) ref.nose + 0.3f else eyeSpheres.map { it[1] }.average().toFloat()
+        val pts = hv.filter { it < 13380 && V[it * 3 + 1] > ref.chin - 0.1f }
+        var cx = 0.0; var cy = 0.0; var cz = 0.0; for (i in pts) { cx += V[i * 3]; cy += V[i * 3 + 1]; cz += V[i * 3 + 2] }
+        cx /= pts.size; cy /= pts.size; cz /= pts.size
+        val s = doubleArrayOf(1.0, 1.0, 1.0); val t = DoubleArray(3); val c = doubleArrayOf(cx, cy, cz)
+        val vn = FloatArray(0)
+        for (it in 0 until 12) {
+            // sums for a per-axis linear fit q = s (p - c) + c + t
+            val sp = DoubleArray(3); val sq = DoubleArray(3); val spp = DoubleArray(3); val spq = DoubleArray(3); var n = 0
+            for (i in pts) {
+                val px = (s[0] * (V[i * 3] - cx) + cx + t[0]).toFloat(); val py = (s[1] * (V[i * 3 + 1] - cy) + cy + t[1]).toFloat(); val pz = (s[2] * (V[i * 3 + 2] - cz) + cz + t[2]).toFloat()
+                val h = mq.nearest(px, py, pz, 0.8f) ?: continue
+                if (img != null && V[i * 3 + 1] > eA + 0.3f) { val (iw, ih, ip) = img
+                    val ta = prep.tris[h.tri * 3]; val tb = prep.tris[h.tri * 3 + 1]; val tc = prep.tris[h.tri * 3 + 2]
+                    val u = h.w0 * prep.uv[ta * 2] + h.w1 * prep.uv[tb * 2] + h.w2 * prep.uv[tc * 2]; val v = h.w0 * prep.uv[ta * 2 + 1] + h.w1 * prep.uv[tb * 2 + 1] + h.w2 * prep.uv[tc * 2 + 1]
+                    if (!OutfitDraft.isSkinColour(ip[(v.coerceIn(0f, 0.9999f) * ih).toInt() * iw + (u.coerceIn(0f, 0.9999f) * iw).toInt()], 0.55f)) continue }
+                val q = doubleArrayOf(h.x.toDouble(), h.y.toDouble(), h.z.toDouble())
+                for (k in 0..2) { val pk = V[i * 3 + k] - c[k]; sp[k] += pk; sq[k] += q[k] - c[k]; spp[k] += pk * pk; spq[k] += pk * (q[k] - c[k]) }
+                n++
+            }
+            if (n < 50) break
+            for (k in 0..2) { val den = n * spp[k] - sp[k] * sp[k]; if (Math.abs(den) < 1e-9) continue
+                s[k] = ((n * spq[k] - sp[k] * sq[k]) / den).coerceIn(0.8, 1.35); t[k] = (sq[k] - s[k] * sp[k]) / n }
+        }
+        debug?.invoke("head box: scale ${s.joinToString { "%.3f".format(it) }} shift ${t.joinToString { "%.3f".format(it) }}")
+        val out = FloatArray(nV * 3)
+        for (i in 0 until nV) { val y = V[i * 3 + 1]; if (y < ref.cutY - 0.25f) continue
+            if (i >= 13380 && !(Math.abs(V[i * 3] - cx) < 1.2 && y > ref.cutY)) continue
+            val f = smooth(ref.cutY - 0.2f, ref.chin, y)
+            for (k in 0..2) out[i * 3 + k] = (f * ((s[k] - 1) * (V[i * 3 + k] - c[k]) + t[k])).toFloat() }
+        return out
+    }
+
+    /**
+     * Fits the app's face sliders to the new head: least squares on how far the new surface is along each app point's
+     * normal, plus heavily weighted landmarks (eyes, nose tip, mouth line). Linear in the slider amounts (every slider is
+     * a sum of fixed per-vertex offsets), bounded 0..1 per direction, re-linearised a few times.
+     * Returns per-vertex offsets (base vertices, helpers included).
+     */
+    private fun fitSliders(model: HumanModel, V: FloatArray, hv: IntArray, bt: IntArray, vn: FloatArray, mq: MeshQuery, mn: FloatArray,
+                           prep: Prepared, ref: AppRef, img: Triple<Int, Int, IntArray>?, mp: FloatArray, eyeSpheres: List<FloatArray>, chinM: Float, p: Params): FloatArray {
+        val lib = model.lib; val nV = V.size / 3
+        val groups = setOf("head", "cheek", "chin", "eyes", "eyebrows", "forehead", "mouth", "nose")
+        // one variable per slider direction
+        class Var(val name: String, val idx: IntArray, val d: FloatArray, val hi: Float)
+        val vars = ArrayList<Var>()
+        for (g in lib.defs.groups) { if (g.name !in groups) continue
+            for (sl in g.sliders) { val u = model.state.details[sl.id] ?: 0f
+                for ((dir, list) in listOf(1 to sl.pos, -1 to sl.neg)) { if (list.isEmpty()) continue
+                    val acc = HashMap<Int, FloatArray>()
+                    for (tn in list) { val t = lib.targets.get(tn) ?: continue; val (ix, dd) = t
+                        for (q in ix.indices) { val a = acc.getOrPut(ix[q]) { FloatArray(3) }; a[0] += dd[q * 3]; a[1] += dd[q * 3 + 1]; a[2] += dd[q * 3 + 2] } }
+                    if (acc.isEmpty()) continue
+                    val idx = acc.keys.toIntArray(); val d = FloatArray(idx.size * 3); for ((q, i) in idx.withIndex()) { val a = acc[i]!!; d[q * 3] = a[0]; d[q * 3 + 1] = a[1]; d[q * 3 + 2] = a[2] }
+                    val room = (1f - maxOf(0f, u * dir)).coerceIn(0f, 1f)
+                    vars.add(Var("${sl.id}${if (dir > 0) "+" else "-"}", idx, d, room)) } } }
+        val K = vars.size
+        // per vertex: which variables move it, and by how much
+        val touch = HashMap<Int, ArrayList<Pair<Int, Int>>>()   // vertex -> (var, slot)
+        for ((k, v) in vars.withIndex()) for ((q, i) in v.idx.withIndex()) touch.getOrPut(i) { ArrayList() }.add(k to q)
+        fun delta(i: Int, x: DoubleArray, out: FloatArray) { out[0] = 0f; out[1] = 0f; out[2] = 0f
+            touch[i]?.forEach { (k, q) -> val w = x[k].toFloat(); if (w != 0f) { val v = vars[k]; out[0] += w * v.d[q * 3]; out[1] += w * v.d[q * 3 + 1]; out[2] += w * v.d[q * 3 + 2] } } }
+        // landmarks on the new head
+        val found = if (img != null) findEyes(mp, mn, prep.uv, prep.n, img, ref, chinM)?.takeIf { f -> Math.abs(f[1] - f[4]) < 0.15f && Math.abs(f[2] - f[5]) < 0.3f && f[0] > ref.ax && f[3] < ref.ax } else null
+        val eA = eyeSpheres.map { it[1] }.average().toFloat()
+        val lm = wrapLandmarks(V, hv, bt, mp, prep, img, ref, ref.chin, chinM, eA, found?.let { (it[1] + it[4]) / 2 } ?: eA)
+        // app landmark vertices: eyeball helpers (per eye), nose tip vertex, teeth (mouth line)
+        val eyeVerts = eyeSpheres.map { e -> (13380 until nV).filter { j -> val dx = V[j * 3] - e[0]; val dy = V[j * 3 + 1] - e[1]; val dz = V[j * 3 + 2] - e[2]; dx * dx + dy * dy + dz * dz < (1.4f * e[3]) * (1.4f * e[3]) } }
+        val noseIdx = hv.filter { it < 13380 && Math.abs(V[it * 3] - ref.ax) < 0.12f && V[it * 3 + 1] > ref.chin + 0.2f && V[it * 3 + 1] < eA - 0.15f }.maxByOrNull { V[it * 3 + 2] }
+        var noseMz = Float.NaN; var noseMy = Float.NaN
+        run { var best = -Float.MAX_VALUE; for (i in 0 until prep.n) { val y = mp[i * 3 + 1]; if (y <= chinM + 0.2f || Math.abs(mp[i * 3] - ref.ax) > 0.12f) continue
+            if (found != null && y >= (found[1] + found[4]) / 2 - 0.15f) continue
+            if (mp[i * 3 + 2] > best) { best = mp[i * 3 + 2]; noseMz = mp[i * 3 + 2]; noseMy = y } } }
+        val mouthKnot = lm.firstOrNull { it.first > ref.chin + 0.05f && it.first < (noseIdx?.let { V[it * 3 + 1] } ?: eA) - 0.05f }
+        val teeth = (13380 until nV).filter { j -> V[j * 3 + 1] > ref.chin && V[j * 3 + 1] < (noseIdx?.let { V[it * 3 + 1] } ?: eA) && Math.abs(V[j * 3] - ref.ax) < 0.3f && eyeVerts.none { j in it } }
+
+        val x = DoubleArray(K)
+        val cur = FloatArray(nV * 3); val dv = FloatArray(3)
+        // the eyelids and sockets don't take part in the surface fit: the new head's eyes are painted on a smooth surface,
+        // so fitting to it would stretch the lids wide open (the eye landmarks place the eyes instead)
+        val samples = hv.filter { i -> i < 13380 && V[i * 3 + 1] > ref.cutY + 0.1f && eyeSpheres.none { e ->
+            val dx = V[i * 3] - e[0]; val dy = V[i * 3 + 1] - e[1]; val dz = V[i * 3 + 2] - e[2]
+            dz > -0.5f * e[3] && (dx * dx) / (1.8f * 1.8f * e[3] * e[3]) + (dy * dy) / (1.4f * 1.4f * e[3] * e[3]) < 1f } }
+        for (round in 0 until 5) {
+            for (i in 0 until nV) { delta(i, x, dv); for (k in 0..2) cur[i * 3 + k] = V[i * 3 + k] + dv[k] }
+            val cn = weldedNormals(cur, bt, nV)
+            run { var sg = 0.0; for (i in hv) sg += cn[i * 3] * vn[i * 3] + cn[i * 3 + 1] * vn[i * 3 + 1] + cn[i * 3 + 2] * vn[i * 3 + 2]; if (sg < 0) for (i in cn.indices) cn[i] = -cn[i] }
+            val A = Array(K) { DoubleArray(K) }; val b = DoubleArray(K)
+            val row = DoubleArray(K); val nz = ArrayList<Int>()
+            fun addRow(w: Double, r: Double) { for (a in nz) { b[a] += w * row[a] * r; for (c in nz) A[a][c] += w * row[a] * row[c] }; for (a in nz) row[a] = 0.0; nz.clear() }
+            var used = 0
+            for (i in samples) {
+                val px = cur[i * 3]; val py = cur[i * 3 + 1]; val pz = cur[i * 3 + 2]
+                val h = mq.nearest(px, py, pz, 0.7f) ?: continue
+                val ta = prep.tris[h.tri * 3]; val tb = prep.tris[h.tri * 3 + 1]; val tc = prep.tris[h.tri * 3 + 2]
+                val hx = h.w0 * mn[ta * 3] + h.w1 * mn[tb * 3] + h.w2 * mn[tc * 3]; val hy = h.w0 * mn[ta * 3 + 1] + h.w1 * mn[tb * 3 + 1] + h.w2 * mn[tc * 3 + 1]; val hz = h.w0 * mn[ta * 3 + 2] + h.w1 * mn[tb * 3 + 2] + h.w2 * mn[tc * 3 + 2]
+                if (hx * cn[i * 3] + hy * cn[i * 3 + 1] + hz * cn[i * 3 + 2] < 0.3f) continue
+                // hair isn't the head: above the brows, only skin-coloured spots count
+                if (img != null && V[i * 3 + 1] > eA + 0.3f) { val (iw, ih, ip) = img
+                    val u = h.w0 * prep.uv[ta * 2] + h.w1 * prep.uv[tb * 2] + h.w2 * prep.uv[tc * 2]; val v = h.w0 * prep.uv[ta * 2 + 1] + h.w1 * prep.uv[tb * 2 + 1] + h.w2 * prep.uv[tc * 2 + 1]
+                    if (!OutfitDraft.isSkinColour(ip[(v.coerceIn(0f, 0.9999f) * ih).toInt() * iw + (u.coerceIn(0f, 0.9999f) * iw).toInt()], 0.55f)) continue }
+                val r = (h.x - px) * cn[i * 3] + (h.y - py) * cn[i * 3 + 1] + (h.z - pz) * cn[i * 3 + 2]
+                // linear in x: the change along the normal per unit of each variable
+                touch[i]?.forEach { (k, q) -> val v = vars[k]; row[k] += v.d[q * 3] * cn[i * 3] + v.d[q * 3 + 1] * cn[i * 3 + 1] + v.d[q * 3 + 2] * cn[i * 3 + 2]; if (k !in nz) nz.add(k) }
+                // residual relative to the current x (we solve for the full x, so add J x back)
+                var jx = 0.0; for (a in nz) jx += row[a] * x[a]
+                val face = Math.abs(px - ref.ax) < 0.7f && cn[i * 3 + 2] > 0.4f
+                addRow(if (face) 2.0 else 1.0, r + jx); used++
+            }
+            // landmarks: each coordinate of a group of vertices (their average), weighted heavily
+            fun land(verts: List<Int>, axis: Int, target: Float, w: Double) {
+                if (verts.isEmpty() || target.isNaN()) return
+                var now = 0.0; for (i in verts) now += cur[i * 3 + axis]; now /= verts.size
+                val tmp = HashMap<Int, Double>()
+                for (i in verts) touch[i]?.forEach { (k, q) -> tmp[k] = (tmp[k] ?: 0.0) + vars[k].d[q * 3 + axis] / verts.size }
+                for ((k, v) in tmp) { row[k] = v; nz.add(k) }
+                var jx = 0.0; for (a in nz) jx += row[a] * x[a]
+                addRow(w, (target - now) + jx)
+            }
+            val W = 60.0
+            if (found != null) for ((e, vs) in eyeVerts.withIndex()) { val fx = if (eyeSpheres[e][0] > ref.ax) 0 else 3
+                land(vs, 0, found[fx] + p.eyeApart * (if (fx == 0) 0.5f else -0.5f), W); land(vs, 1, found[fx + 1] + p.eyeUp, W); land(vs, 2, found[fx + 2] - eyeSpheres[e][3] * 0.9f + p.eyeDepth, W * 0.3) }
+            if (noseIdx != null) { land(listOf(noseIdx), 1, noseMy, W); land(listOf(noseIdx), 2, noseMz, W * 0.5) }
+            if (mouthKnot != null && teeth.isNotEmpty()) land(teeth, 1, mouthKnot.second, W * 3)
+            // a little pull towards no change, then solve with the bounds (clamp, fix the clamped ones, solve again)
+            var tr = 0.0; for (k in 0 until K) tr += A[k][k]; val lam = 0.08 * tr / K + 1e-6
+            for (k in 0 until K) A[k][k] += lam
+            val free = BooleanArray(K) { true }; var xs = DoubleArray(K)
+            repeat(6) {
+                val ids = (0 until K).filter { free[it] }
+                val M = Array(ids.size) { a -> DoubleArray(ids.size) { c -> A[ids[a]][ids[c]] } }
+                val rhs = DoubleArray(ids.size) { a -> var v = b[ids[a]]; for (k in 0 until K) if (!free[k]) v -= A[ids[a]][k] * xs[k]; v }
+                val sol = solve(M, arrayOf(rhs)) ?: return@repeat
+                for ((a, k) in ids.withIndex()) xs[k] = sol[0][a]
+                var clamped = false
+                for (k in ids) { val hi = vars[k].hi.toDouble(); if (xs[k] < 0.0) { xs[k] = 0.0; free[k] = false; clamped = true } else if (xs[k] > hi) { xs[k] = hi; free[k] = false; clamped = true } }
+                if (!clamped) return@repeat
+            }
+            for (k in 0 until K) x[k] = xs[k]
+            debug?.invoke("slider fit round $round: $used points, ${x.count { it > 0.02 }} sliders used")
+        }
+        debug?.invoke("sliders: " + vars.indices.filter { x[it] > 0.05 }.sortedByDescending { x[it] }.take(25).joinToString { "${vars[it].name} %.2f".format(x[it]) })
+        val out = FloatArray(nV * 3)
+        for (i in 0 until nV) { delta(i, x, dv); for (k in 0..2) out[i * 3 + k] = dv[k] }
+        return out
+    }
+
+    /** Maps y through knots (pairs of app y -> new y, ascending); straight lines between, and past the ends. */
+    private fun piecewise(kn: List<Pair<Float, Float>>, y: Float): Float {
+        if (y <= kn[0].first) return kn[0].second + (y - kn[0].first)
+        for (j in 1 until kn.size) if (y <= kn[j].first) { val (a0, b0) = kn[j - 1]; val (a1, b1) = kn[j]
+            return b0 + (y - a0) * (b1 - b0) / (a1 - a0).coerceAtLeast(1e-4f) }
+        val (a0, b0) = kn[kn.size - 2]; val (a1, b1) = kn.last()
+        return b1 + (y - a1) * ((b1 - b0) / (a1 - a0).coerceAtLeast(1e-4f)).coerceIn(0.7f, 1.4f)
+    }
+
+    /**
+     * Heights of the features on both faces: neck cut, chin, mouth line, nose tip, eyes (app y -> new y).
+     * Nose tip: the front-most point in the middle strip between chin and eyes. Mouth: on the app, the lip opening (the
+     * edge of the skin mesh between nose and chin); on the new head, the darkest line down the middle between nose and chin.
+     */
+    private fun wrapLandmarks(V: FloatArray, hv: IntArray, bt: IntArray, mp: FloatArray, prep: Prepared, img: Triple<Int, Int, IntArray>?,
+                              ref: AppRef, cA: Float, chinM: Float, eA: Float, eM: Float): List<Pair<Float, Float>> {
+        fun noseTip(p: FloatArray, idx: Iterable<Int>, lo: Float, hi: Float): Float? {
+            var best = -Float.MAX_VALUE; var by: Float? = null
+            for (i in idx) { val y = p[i * 3 + 1]; if (y <= lo || y >= hi || Math.abs(p[i * 3] - ref.ax) > 0.12f) continue
+                if (p[i * 3 + 2] > best) { best = p[i * 3 + 2]; by = y } }
+            return by
+        }
+        val noseA = noseTip(V, hv.filter { it < 13380 }, cA + 0.2f, eA - 0.15f)
+        val noseM = noseTip(mp, 0 until prep.n, chinM + 0.2f, eM - 0.15f)
+        // app mouth: skin-mesh edges used by one triangle only, in the middle of the face between nose and chin
+        var mouthA: Float? = null
+        if (noseA != null) {
+            val cnt = HashMap<Long, Int>()
+            for (t in 0 until bt.size / 3) for (q in 0..2) { val a = bt[t * 3 + q]; val b = bt[t * 3 + (q + 1) % 3]
+                if (a >= 13380 || b >= 13380) continue
+                val k = if (a < b) a.toLong() * 20000 + b else b.toLong() * 20000 + a; cnt[k] = (cnt[k] ?: 0) + 1 }
+            val ys = ArrayList<Float>()
+            for ((k, c) in cnt) { if (c != 1) continue; val a = (k / 20000).toInt(); val b = (k % 20000).toInt()
+                val y = (V[a * 3 + 1] + V[b * 3 + 1]) / 2; val x = (V[a * 3] + V[b * 3]) / 2 - ref.ax
+                if (y > cA + 0.1f && y < noseA - 0.1f && Math.abs(x) < 0.25f) ys.add(y) }
+            if (ys.size >= 4) mouthA = ys.sorted()[ys.size / 2]
+            // no opening in the skin: the middle of the teeth (helper geometry inside the mouth) is the mouth line
+            if (mouthA == null) {
+                val ty = ArrayList<Float>()
+                for (j in 13380 until V.size / 3) { val y = V[j * 3 + 1]; if (y > cA && y < noseA && Math.abs(V[j * 3] - ref.ax) < 0.3f) ty.add(y) }
+                if (ty.size >= 10) { ty.sort(); mouthA = (ty[(ty.size * 0.1f).toInt()] + ty[(ty.size * 0.9f).toInt()]) / 2 }
+            }
+        }
+        // new mouth: darkest row of the texture down the middle strip, between the nose tip and the chin
+        var mouthM: Float? = null
+        if (img != null && noseM != null) {
+            val (iw, ih, ip) = img
+            val bins = 40; val lum = DoubleArray(bins); val c = IntArray(bins)
+            val lo = chinM + 0.1f * (noseM - chinM); val hi = noseM - 0.15f * (noseM - chinM)
+            var front = -Float.MAX_VALUE; for (i in 0 until prep.n) { val y = mp[i * 3 + 1]; if (y > lo && y < hi && Math.abs(mp[i * 3] - ref.ax) < 0.1f) front = maxOf(front, mp[i * 3 + 2]) }
+            for (i in 0 until prep.n) { val y = mp[i * 3 + 1]; if (y <= lo || y >= hi || Math.abs(mp[i * 3] - ref.ax) > 0.1f || mp[i * 3 + 2] < front - 0.35f) continue
+                val col = ip[(prep.uv[i * 2 + 1].coerceIn(0f, 0.9999f) * ih).toInt() * iw + (prep.uv[i * 2].coerceIn(0f, 0.9999f) * iw).toInt()]
+                val b = ((y - lo) / (hi - lo) * bins).toInt().coerceIn(0, bins - 1)
+                lum[b] += (((col shr 16) and 255) * 0.3 + ((col shr 8) and 255) * 0.59 + (col and 255) * 0.11); c[b]++ }
+            var best = Double.MAX_VALUE
+            for (b in 1 until bins - 1) { if (c[b - 1] + c[b] + c[b + 1] < 3) continue
+                val v = (lum[b - 1] + lum[b] + lum[b + 1]) / (c[b - 1] + c[b] + c[b + 1]); if (v < best) { best = v; mouthM = lo + (b + 0.5f) / bins * (hi - lo) } }
+        }
+        val kn = ArrayList<Pair<Float, Float>>()
+        kn.add(ref.cutY to ref.cutY); kn.add(cA to chinM)
+        if (mouthA != null && mouthM != null && mouthA > cA && mouthM > chinM) kn.add(mouthA to mouthM)
+        if (noseA != null && noseM != null && noseA > (kn.last().first) && noseM > kn.last().second && noseA < eA && noseM < eM) kn.add(noseA to noseM)
+        kn.add(eA to eM)
+        // keep it sane: each new gap within half to double of the app's
+        val out = ArrayList<Pair<Float, Float>>(); out.add(kn[0])
+        for (j in 1 until kn.size) { val (a0, b0) = out.last(); val (a1, b1) = kn[j]; val g = a1 - a0
+            out.add(a1 to (b0 + (b1 - b0).coerceIn(0.5f * g, 2f * g))) }
+        debug?.invoke("landmarks app->new: " + out.joinToString { "%.2f->%.2f".format(it.first, it.second) } + " (mouth ${mouthA}->${mouthM}, nose ${noseA}->${noseM})")
+        return out
+    }
+
+    /** Solves A x = b for several right-hand sides (Gaussian elimination with partial pivoting). */
+    private fun solve(a0: Array<DoubleArray>, bs: Array<DoubleArray>): Array<DoubleArray>? {
+        val n = a0.size; val a = Array(n) { a0[it].copyOf() }; val b = Array(bs.size) { bs[it].copyOf() }
+        for (c in 0 until n) {
+            var p = c; for (r in c + 1 until n) if (Math.abs(a[r][c]) > Math.abs(a[p][c])) p = r
+            if (Math.abs(a[p][c]) < 1e-12) return null
+            if (p != c) { val t = a[p]; a[p] = a[c]; a[c] = t; for (v in b) { val u = v[p]; v[p] = v[c]; v[c] = u } }
+            for (r in c + 1 until n) { val f = a[r][c] / a[c][c]; if (f == 0.0) continue
+                for (k in c until n) a[r][k] -= f * a[c][k]; for (v in b) v[r] -= f * v[c] }
+        }
+        return Array(b.size) { q -> val v = b[q]; val x = DoubleArray(n)
+            for (r in n - 1 downTo 0) { var s = v[r]; for (k in r + 1 until n) s -= a[r][k] * x[k]; x[r] = s / a[r][r] }; x }
+    }
+
+    /**
      * "Wrap": the app's head keeps the shape it was wrapped to, and the new face is painted onto (a copy of) the body skin.
      */
     private fun buildWrap(model: HumanModel, prep: Prepared, p: Params, id: String, name: String, filesDir: File,
                           decoder: ImageDecoder, writer: ImageWriter, progress: (String) -> Unit, ref: AppRef, V: FloatArray,
                           hv: IntArray, inH: BooleanArray, disp: FloatArray, helperMoved: ArrayList<Int>,
                           eyeSpheres: List<FloatArray>, eyeShift: ArrayList<FloatArray>, mq: MeshQuery,
-                          img: Triple<Int, Int, IntArray>?, eyeY: Float): HeadData {
+                          img: Triple<Int, Int, IntArray>?, eyeY: Float, fromSliders: Boolean = false): HeadData {
         val lib = model.lib; val bm = lib.base; val nV = bm.nV
         // the eyelids keep their own shape and ride with their eyeball, fading into the wrapped skin around them
-        for ((ei, e) in eyeSpheres.withIndex()) { val sh = eyeShift.getOrNull(ei) ?: continue
+        if (!fromSliders) for ((ei, e) in eyeSpheres.withIndex()) { val sh = eyeShift.getOrNull(ei) ?: continue
             for (i in hv) {
                 val dx = V[i * 3] - e[0]; val dy = V[i * 3 + 1] - e[1]; val dz = V[i * 3 + 2] - e[2]; if (dz < -0.4f * e[3]) continue
                 val m = Math.sqrt(((dx * dx) / (1.3f * 1.3f * e[3] * e[3]) + (dy * dy) / (e[3] * e[3])).toDouble()).toFloat()
@@ -611,7 +930,7 @@ object HeadSwap {
             } }
         // the mouth's insides (teeth, tongue) move as one piece with the lips in front of them, so they stay behind the lips
         val moved = helperMoved.toHashSet()
-        run {
+        if (!fromSliders) run {
             val mouth = (13380 until nV).filter { it !in moved && V[it * 3 + 1] > ref.cutY - 0.3f && V[it * 3 + 1] < eyeY - 0.4f }
             if (mouth.isEmpty()) return@run
             var cx = 0f; var cy = 0f; var cz = 0f; for (j in mouth) { cx += V[j * 3]; cy += V[j * 3 + 1]; cz += V[j * 3 + 2] }
@@ -667,6 +986,8 @@ object HeadSwap {
             fun med(l: ArrayList<Int>) = if (l.isEmpty()) 1.0 else l.sorted()[l.size / 2].toDouble()
             val mHead = DoubleArray(3) { med(hs[it]) }; val mBody = DoubleArray(3) { med(bs[it]) }
             debug?.invoke("wrap skin: head ${mHead.toList()} body ${mBody.toList()} n $cnt")
+            fun mix(a: Int, b: Int, t: Float): Int { var o = 0xff000000.toInt()
+                for (k in 0..2) { val s2 = 16 - 8 * k; o = o or ((((a shr s2) and 255) * (1 - t) + ((b shr s2) and 255) * t).toInt().coerceIn(0, 255) shl s2) }; return o }
             fun tint(c: Int, g: FloatArray): Int { var o = c and 0xff000000.toInt()
                 for (k in 0..2) o = o or ((((c shr (16 - 8 * k)) and 255) * g[k]).toInt().coerceIn(0, 255) shl (16 - 8 * k)); return o }
             val ok = cnt >= 10 && p.skinMatch > 0f
@@ -676,6 +997,22 @@ object HeadSwap {
             val gain = FloatArray(3) { k -> if (!ok || p.bodyToHead) 1f else (1f + ((mBody[k] / mHead[k].coerceAtLeast(1.0)).toFloat() - 1f) * p.skinMatch).coerceIn(0.3f, 2.5f) }
             val wn = weldedNormals(W, bq.tris, nV)
             run { var sg = 0.0; for (i in hv) sg += wn[i * 3] * bq.vn[i * 3] + wn[i * 3 + 1] * bq.vn[i * 3 + 1] + wn[i * 3 + 2] * bq.vn[i * 3 + 2]; if (sg < 0) for (i in wn.indices) wn[i] = -wn[i] }
+            // where each app point looks out along its own normal onto the new head (keeps features lined up where the
+            // shapes differ; the nearest point would slide off sideways)
+            val corr = FloatArray(nV * 3); val hasCorr = BooleanArray(nV)
+            for (i in hv) {
+                val x0 = W[i * 3]; val y0 = W[i * 3 + 1]; val z0 = W[i * 3 + 2]; val nx = wn[i * 3]; val ny = wn[i * 3 + 1]; val nz = wn[i * 3 + 2]
+                var bestT = Float.MAX_VALUE; var bx = 0f; var by = 0f; var bz = 0f
+                var t = -0.5f
+                while (t <= 0.5f) {
+                    val h = mq.nearest(x0 + nx * t, y0 + ny * t, z0 + nz * t, 0.03f)
+                    if (h != null && h.dist < 0.02f && Math.abs(t) < Math.abs(bestT)) { bestT = t; bx = h.x; by = h.y; bz = h.z }
+                    t += 0.02f
+                }
+                if (bestT != Float.MAX_VALUE) { corr[i * 3] = bx; corr[i * 3 + 1] = by; corr[i * 3 + 2] = bz; hasCorr[i] = true }
+                else mq.nearest(x0, y0, z0, 0.6f)?.let { h -> corr[i * 3] = h.x; corr[i * 3 + 1] = h.y; corr[i * 3 + 2] = h.z; hasCorr[i] = true }
+            }
+            val lidTone = (0xff shl 24) or ((mHead[0] * 0.96).toInt().coerceIn(0, 255) shl 16) or ((mHead[1] * 0.95).toInt().coerceIn(0, 255) shl 8) or (mHead[2] * 0.95).toInt().coerceIn(0, 255)
             val centres = eyeSpheres.mapIndexed { ei, e -> val sh = eyeShift.getOrNull(ei) ?: FloatArray(3); floatArrayOf(e[0] + sh[0], e[1] + sh[1], e[2] + sh[2], e[3]) }
             var t = 0
             while (t < bm.tris.size) {
@@ -685,30 +1022,31 @@ object HeadSwap {
                 paintTri(out, sw, shh, bm.uv, a, b, c) { wa, wb, wc, old ->
                     val px = wa * W[ra * 3] + wb * W[rb * 3] + wc * W[rc * 3]; val py = wa * W[ra * 3 + 1] + wb * W[rb * 3 + 1] + wc * W[rc * 3 + 1]; val pz = wa * W[ra * 3 + 2] + wb * W[rb * 3 + 2] + wc * W[rc * 3 + 2]
                     val f0 = smooth(ref.cutY - 0.3f, ref.cutY + 0.2f, py)
-                    val h = if (f0 > 0f) mq.nearest(px, py, pz, 0.4f) else null
+                    val h = if (f0 > 0f && hasCorr[ra] && hasCorr[rb] && hasCorr[rc]) {
+                        val qx = wa * corr[ra * 3] + wb * corr[rb * 3] + wc * corr[rc * 3]; val qy = wa * corr[ra * 3 + 1] + wb * corr[rb * 3 + 1] + wc * corr[rc * 3 + 1]; val qz = wa * corr[ra * 3 + 2] + wb * corr[rb * 3 + 2] + wc * corr[rc * 3 + 2]
+                        mq.nearest(qx, qy, qz, 0.3f)?.let { hh -> MeshQuery.Hit(hh.tri, hh.w0, hh.w1, hh.w2, hh.x, hh.y, hh.z,
+                            Math.sqrt(((px - hh.x) * (px - hh.x) + (py - hh.y) * (py - hh.y) + (pz - hh.z) * (pz - hh.z)).toDouble()).toFloat()) }
+                    } else null
                     if (h == null) old else {
                         val nz = wa * wn[ra * 3 + 2] + wb * wn[rb * 3 + 2] + wc * wn[rc * 3 + 2]
                         val col = colourAt(h); val skin = OutfitDraft.isSkinColour(col, 0.55f)
-                        // painted eyeballs (the app's own eyes are behind the lids) and the new head's hair stay off the skin
-                        val inEye = centres.any { e -> val dx = px - e[0]; val dy = py - e[1]
-                            (dx * dx) / (1.1f * 1.1f * e[3] * e[3]) + (dy * dy) / (0.75f * 0.75f * e[3] * e[3]) < 1f }
-                        // the face (brows, lips, make-up and all) is painted as it is; around it only skin (ears, neck, jaw),
-                        // and never the new head's hair, which floats off the skin because the wrap skipped it
                         // only the face itself is painted, faded out at its edges: hair often passes as skin colour, and the
                         // sides and top of the head are under the app's hair anyway
-                        val ey0 = (ref.chin + eyeY + 0.6f) / 2; val ehw = 0.78f; val ehh = (eyeY + 0.6f - ref.chin) / 2 + 0.2f
+                        val ey0 = (ref.chin + eyeY + 1.0f) / 2; val ehw = 0.8f; val ehh = (eyeY + 1.0f - ref.chin) / 2 + 0.2f
                         val ex = (px - ref.ax) / ehw; val eyy = (py - ey0) / ehh
                         val mask = (1f - smooth(0.8f, 1.05f, Math.sqrt((ex * ex + eyy * eyy).toDouble()).toFloat())) * smooth(0.05f, 0.35f, nz)
+                        // the app's eyelids (they hug the eyeball; they open and close, so the new head's painted lids don't
+                        // fit them): the face's own skin tone, faded in by how close the skin is to the eyeball
+                        var wl = 0f
+                        for (e in centres) { val dx = px - e[0]; val dy = py - e[1]; val dz = pz - e[2]
+                            wl = maxOf(wl, 1f - smooth(1.0f, 1.16f, Math.sqrt((dx * dx + dy * dy + dz * dz).toDouble()).toFloat() / e[3])) }
                         val r8 = (col shr 16) and 255; val g8 = (col shr 8) and 255; val b8 = col and 255
-                        val mx = maxOf(r8, g8, b8); val mn = minOf(r8, g8, b8)
-                        val whiteish = mx > 165 && (mx - mn) < 0.25f * mx     // painted teeth and eye whites
-                        if (mask <= 0f || (!skin && (inEye || h.dist > 0.08f || (whiteish && py < eyeY - 0.3f)))) old else {
-                            val f = f0 * mask * (1f - smooth(0.1f, 0.3f, h.dist))
-                            val cc = tint(col, gain)     // everything the same way, so shading and make-up keep their look
-                            var o = old and 0xff000000.toInt()
-                            for (k in 0..2) { val s2 = 16 - 8 * k; o = o or ((((old shr s2) and 255) * (1 - f) + ((cc shr s2) and 255) * f).toInt().coerceIn(0, 255) shl s2) }
-                            o
-                        }
+                        val mx = maxOf(r8, g8, b8); val mn2 = minOf(r8, g8, b8)
+                        val whiteish = mx > 165 && (mx - mn2) < 0.25f * mx     // painted teeth and eye whites
+                        val painted = if (skin || (h.dist <= (if (py < eyeY + 0.9f) 0.75f else 0.4f) && !(whiteish && py < eyeY - 0.3f) && wl <= 0f)) tint(col, gain) else null
+                        val target = if (wl > 0f) { val lid = tint(lidTone, gain); if (painted == null) lid else mix(painted, lid, wl) } else painted
+                        if (mask <= 0f || target == null) old
+                        else mix(old, target, f0 * mask * (if (wl > 0f) 1f else (1f - smooth(0.6f, 0.9f, h.dist))))
                     }
                 }
             }

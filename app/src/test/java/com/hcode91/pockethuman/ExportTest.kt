@@ -557,12 +557,24 @@ class HeadSwapTest {
         val writer = ImageWriter { a, w, h, dir, base -> dir.mkdirs(); File(dir, "$base.png").writeBytes(ct.png(a, w, h)); "$base.png" }
         val srcOf = AssetSource { p -> if (p.startsWith("imported/")) File(tmp, p).readBytes() else File("src/main/assets/ph", p).readBytes() }
         val lib = Library(srcOf, tmp)
-        val m = HumanModel(lib).apply { state.macro["gender"] = 0f; state.macro["age"] = 0.56f; state.clothes.add("clothes_female_casualsuit01"); rebuild() }
+        val m = HumanModel(lib).apply { state.macro["gender"] = 0f; state.macro["age"] = 0.56f; state.clothes.add("clothes_female_casualsuit01")
+            if (File("/tmp/wrap_light").exists()) state.setRace("caucasian", 1f); rebuild() }
         var raw = MeshIO.load(src); if (raw.tris.size / 3 > 1_500_000) raw = MeshIO.simplify(raw, 1_000_000)
         HeadSwap.debug = { println(it) }
         val t0 = System.currentTimeMillis()
         val prep = HeadSwap.prepare(raw, 0, m)
         val p = HeadSwap.Params().apply { wrap = true; bodyToHead = File("/tmp/wrap_b2h").exists() }
+        run {   // the new head as placed on the body, for comparing shapes
+            File(tmp, "imported/prev").mkdirs(); File(tmp, "imported/prev/tex.${raw.textureExt}").writeBytes(raw.texture!!)
+            val pos = HeadSwap.place(prep, HeadSwap.appRef(m), p)
+            val part = Part("head_src", pos, weldedNormals(pos, prep.tris, prep.n), prep.uv, prep.tris, "imported/prev/tex.${raw.textureExt}", false, null, IntArray(0), FloatArray(0), IntArray(0), FloatArray(0), 0)
+            File("/tmp/wrap").mkdirs()
+            File("/tmp/wrap/app.glb").outputStream().use { GlbExporter.write(m, it, only = PartBuilder.build(m, true, withExpression = true), anims = emptyList(), faceShapes = false) }
+            File("/tmp/wrap/source_placed.obj").bufferedWriter().use { o ->
+                for (i in 0 until prep.n) o.write("v ${pos[i * 3] * 0.1f} ${pos[i * 3 + 1] * 0.1f} ${pos[i * 3 + 2] * 0.1f}\n")
+                for (t in 0 until prep.tris.size / 3) o.write("f ${prep.tris[t * 3] + 1} ${prep.tris[t * 3 + 1] + 1} ${prep.tris[t * 3 + 2] + 1}\n") }
+            part.name
+        }
         val d = HeadSwap.build(m, prep, p, "w1", "Wrapped", tmp, dec, writer) { println(it) }
         println("wrap built: moved ${d.dispIdx.size}, ${System.currentTimeMillis() - t0} ms")
         HumanModel.headLoader = { id -> HeadStore.load(tmp, id) }
